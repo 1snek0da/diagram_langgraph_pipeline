@@ -13,7 +13,13 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
         _section("1. 结论摘要", decision),
         _section("2. 行业分析", state.get("industry_report_result", {})),
         _section("3. 上游资本开支与政策影响", {"capex": state.get("upstream_capex_result", {}), "policy": state.get("policy_result", {})}),
-        _section("4. 行业未来价值测算", state.get("industry_valuation_result", {})),
+        _section(
+            "4. 未来资本开支预测与行业价值测算",
+            {
+                "future_capex_forecast": state.get("future_capex_forecast_result", {}),
+                "industry_valuation": state.get("industry_valuation_result", {}),
+            },
+        ),
         _section("5. 公司业务与行业增长匹配度", state.get("business_result", {})),
         _section("6. 盈利预测与估值测算", {"forecast": state.get("profit_forecast_result", {}), "valuation": state.get("company_valuation_result", {})}),
         _section("7. 边际变化分析", state.get("marginal_change_result", {})),

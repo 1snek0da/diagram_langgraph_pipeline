@@ -12,7 +12,7 @@ from .agents import (
     index_analysis_agent,
     industry_entry_agent,
     industry_report_agent,
-    industry_trend_agent,
+    future_capex_forecast_agent,
     industry_valuation_agent,
     marginal_change_agent,
     market_entry_agent,
@@ -51,7 +51,7 @@ def build_research_graph(deps: AgentDependencies, checkpointer: Any = None) -> A
         "industry_report": industry_report_agent.run,
         "upstream_capex": upstream_capex_agent.run,
         "policy": policy_agent.run,
-        "industry_trend": industry_trend_agent.run,
+        "future_capex_forecast": future_capex_forecast_agent.run,
         "industry_valuation": industry_valuation_agent.run,
         "stock_entry": stock_entry_agent.run,
         "stock_data_fetch": stock_data_fetch_agent.run,
@@ -81,8 +81,8 @@ def build_research_graph(deps: AgentDependencies, checkpointer: Any = None) -> A
     graph.add_edge("industry_entry", "industry_report")
     graph.add_edge("industry_report", "upstream_capex")
     graph.add_edge("industry_report", "policy")
-    graph.add_edge(["upstream_capex", "policy"], "industry_trend")
-    graph.add_edge("industry_trend", "industry_valuation")
+    graph.add_edge(["upstream_capex", "policy"], "future_capex_forecast")
+    graph.add_edge("future_capex_forecast", "industry_valuation")
 
     graph.add_edge("stock_entry", "stock_data_fetch")
     graph.add_edge("stock_entry", "business")

@@ -24,7 +24,10 @@ CREATE TABLE securities (
 
 CREATE TABLE source_documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider TEXT NOT NULL,
+    source_tier TEXT NOT NULL,
     source_type TEXT NOT NULL,
+    external_id TEXT,
     title TEXT NOT NULL,
     publisher TEXT,
     author TEXT,
@@ -32,6 +35,9 @@ CREATE TABLE source_documents (
     url TEXT,
     file_path TEXT,
     content_hash TEXT NOT NULL UNIQUE,
+    language TEXT,
+    license_scope TEXT,
+    retrieved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -48,6 +54,20 @@ CREATE TABLE analysis_runs (
     max_retries INTEGER NOT NULL DEFAULT 2 CHECK (max_retries >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE provider_fetch_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    dataset_kind TEXT NOT NULL,
+    request_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'partial', 'failed', 'unavailable')),
+    coverage_ratio NUMERIC(8,6) CHECK (coverage_ratio BETWEEN 0 AND 1),
+    warning_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    error_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ended_at TIMESTAMPTZ
 );
 
 CREATE TABLE node_runs (
@@ -75,6 +95,9 @@ CREATE TABLE evidence_items (
     extracted_value_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     confidence_score NUMERIC(5,4) CHECK (confidence_score BETWEEN 0 AND 1),
     page_no INTEGER,
+    paragraph_ref TEXT,
+    metric_key TEXT,
+    extraction_method TEXT NOT NULL DEFAULT 'provided',
     quote_text TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -154,11 +177,87 @@ CREATE TABLE upstream_capex_records (
     run_id UUID REFERENCES analysis_runs(id) ON DELETE CASCADE,
     industry_id UUID NOT NULL REFERENCES industries(id),
     company_name TEXT NOT NULL,
+    entity_id TEXT,
+    company_role TEXT CHECK (company_role IN ('demand', 'supply', 'other')),
+    fiscal_year INTEGER,
     capex_period TEXT NOT NULL,
     capex_amount NUMERIC(30,4),
+    communication_capex_amount NUMERIC(30,4),
+    currency CHAR(3),
+    unit TEXT,
+    scale NUMERIC(30,8) NOT NULL DEFAULT 1,
+    fact_basis TEXT CHECK (fact_basis IN ('reported', 'extracted', 'estimated', 'derived')),
+    provider TEXT,
     capex_change_pct NUMERIC(14,8),
     capex_direction TEXT CHECK (capex_direction IN ('up', 'flat', 'down', 'unknown')),
     source_document_id UUID REFERENCES source_documents(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE financial_metric_facts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    metric_key TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    ticker TEXT REFERENCES securities(ticker),
+    fiscal_year INTEGER,
+    period_start DATE,
+    period_end DATE,
+    value NUMERIC(38,10),
+    currency CHAR(3),
+    unit TEXT NOT NULL,
+    scale NUMERIC(30,8) NOT NULL DEFAULT 1,
+    fact_basis TEXT NOT NULL CHECK (fact_basis IN ('reported', 'extracted', 'estimated', 'derived')),
+    provider TEXT NOT NULL,
+    source_document_id UUID REFERENCES source_documents(id),
+    observed_at TIMESTAMPTZ,
+    confidence_score NUMERIC(5,4) CHECK (confidence_score BETWEEN 0 AND 1),
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (entity_id, metric_key, fiscal_year, period_end, provider, source_document_id)
+);
+
+CREATE TABLE capex_allocations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    entity_id TEXT NOT NULL,
+    fiscal_year INTEGER NOT NULL,
+    total_capex_fact_id UUID REFERENCES financial_metric_facts(id),
+    communication_capex_fact_id UUID REFERENCES financial_metric_facts(id),
+    communication_share NUMERIC(14,10),
+    allocation_basis TEXT NOT NULL CHECK (allocation_basis IN ('reported', 'extracted', 'estimated', 'derived')),
+    evidence_id UUID REFERENCES evidence_items(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (run_id, entity_id, fiscal_year)
+);
+
+CREATE TABLE capex_forecasts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    scenario_name TEXT NOT NULL CHECK (scenario_name IN ('bear', 'base', 'bull')),
+    forecast_year INTEGER NOT NULL,
+    communication_capex NUMERIC(38,10),
+    currency CHAR(3),
+    growth_rate NUMERIC(18,10),
+    communication_share NUMERIC(14,10),
+    forecast_method TEXT NOT NULL,
+    formula_version TEXT NOT NULL,
+    confidence_score NUMERIC(5,4) CHECK (confidence_score BETWEEN 0 AND 1),
+    assumptions_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (run_id, scenario_name, forecast_year)
+);
+
+CREATE TABLE policy_impact_assessments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    direction TEXT NOT NULL CHECK (direction IN ('positive', 'neutral', 'negative')),
+    magnitude TEXT NOT NULL CHECK (magnitude IN ('small', 'large', 'unknown')),
+    impact_horizon TEXT,
+    affected_metrics_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    quantified_impact_pct NUMERIC(18,10),
+    evidence_id UUID REFERENCES evidence_items(id),
+    model_version TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -175,6 +274,12 @@ CREATE TABLE industry_valuation_scenarios (
     current_market_cap NUMERIC(30,4),
     upside_pct NUMERIC(14,8),
     assumptions_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    original_currency CHAR(3),
+    fx_rate NUMERIC(24,12),
+    fx_rate_date DATE,
+    formula_version TEXT,
+    universe_id TEXT,
+    universe_as_of_date DATE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (run_id, scenario_name)
 );
@@ -184,6 +289,10 @@ CREATE TABLE company_business_profiles (
     run_id UUID NOT NULL UNIQUE REFERENCES analysis_runs(id) ON DELETE CASCADE,
     ticker TEXT NOT NULL REFERENCES securities(ticker),
     business_summary TEXT,
+    company_type TEXT,
+    market_share_rank INTEGER,
+    base_pe_low NUMERIC(20,6),
+    base_pe_high NUMERIC(20,6),
     revenue_segments_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     industry_linkage TEXT,
     growth_driver_json JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -192,15 +301,41 @@ CREATE TABLE company_business_profiles (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE company_classifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    ticker TEXT NOT NULL REFERENCES securities(ticker),
+    company_type TEXT NOT NULL CHECK (
+        company_type IN ('optical_chip', 'optical_module', 'optical_component', 'communication_equipment', 'pcb_connector', 'unknown')
+    ),
+    market_share_rank INTEGER CHECK (market_share_rank > 0),
+    industry_position TEXT CHECK (industry_position IN ('leader', 'second_tier', 'lower_tier', 'unknown')),
+    base_pe_low NUMERIC(20,6),
+    base_pe_high NUMERIC(20,6),
+    adjustment_low NUMERIC(12,8),
+    adjustment_high NUMERIC(12,8),
+    final_pe_low NUMERIC(20,6),
+    final_pe_high NUMERIC(20,6),
+    evidence_id UUID REFERENCES evidence_items(id),
+    model_version TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (run_id, ticker)
+);
+
 CREATE TABLE profit_forecasts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     run_id UUID NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
     ticker TEXT NOT NULL REFERENCES securities(ticker),
     forecast_year INTEGER NOT NULL,
+    institution TEXT,
+    published_at TIMESTAMPTZ,
+    forecast_basis TEXT,
+    currency CHAR(3),
     revenue_forecast NUMERIC(30,4),
     net_profit_forecast NUMERIC(30,4),
     eps_forecast NUMERIC(20,8),
     pe_assumption NUMERIC(20,6),
+    revision_pct NUMERIC(18,10),
     source_type TEXT,
     confidence_score NUMERIC(5,4) CHECK (confidence_score BETWEEN 0 AND 1),
     source_document_id UUID REFERENCES source_documents(id),
@@ -212,10 +347,13 @@ CREATE TABLE marginal_change_events (
     run_id UUID NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
     ticker TEXT NOT NULL REFERENCES securities(ticker),
     event_date DATE,
+    published_at TIMESTAMPTZ,
     event_type TEXT NOT NULL,
     event_summary TEXT NOT NULL,
     impact_direction TEXT CHECK (impact_direction IN ('positive', 'neutral', 'negative')),
     impact_horizon TEXT,
+    certainty TEXT CHECK (certainty IN ('low', 'medium', 'high')),
+    source_document_id UUID REFERENCES source_documents(id),
     evidence_id UUID REFERENCES evidence_items(id),
     confidence_score NUMERIC(5,4) CHECK (confidence_score BETWEEN 0 AND 1),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -336,3 +474,7 @@ CREATE INDEX idx_valuation_ticker_date ON market_valuation_metrics (ticker, trad
 CREATE INDEX idx_evidence_run_type ON evidence_items (run_id, evidence_type);
 CREATE INDEX idx_node_runs_run_status ON node_runs (run_id, status);
 CREATE INDEX idx_capex_industry_period ON upstream_capex_records (industry_id, capex_period);
+CREATE INDEX idx_provider_fetch_run ON provider_fetch_runs (run_id, provider, dataset_kind);
+CREATE INDEX idx_metric_fact_lookup ON financial_metric_facts (entity_id, metric_key, fiscal_year DESC);
+CREATE INDEX idx_capex_forecast_run_year ON capex_forecasts (run_id, forecast_year);
+CREATE INDEX idx_profit_forecast_asof ON profit_forecasts (ticker, published_at, forecast_year);

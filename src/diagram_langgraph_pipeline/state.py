@@ -15,11 +15,14 @@ class DiagramBasedResearchState(TypedDict, total=False):
     ticker: str
     company_name: str
     industry_name: str
+    industry_code: str
     as_of_date: str
     investment_horizon: InvestmentHorizon
     user_request: str
     benchmark_ticker: str
     sector_index_ticker: str
+    licensed_report_paths: list[str]
+    policy_urls: list[str]
 
     # Optional caller-supplied research material keyed by topic.
     research_inputs: dict[str, Any]
@@ -34,7 +37,7 @@ class DiagramBasedResearchState(TypedDict, total=False):
     industry_report_result: dict[str, Any]
     upstream_capex_result: dict[str, Any]
     policy_result: dict[str, Any]
-    industry_trend_result: dict[str, Any]
+    future_capex_forecast_result: dict[str, Any]
     industry_valuation_result: dict[str, Any]
 
     # Stock branch

@@ -16,9 +16,9 @@ flowchart TD
     IndustryEntry --> IndustryReport["行业研报解析 Agent"]
     IndustryReport --> Capex["上游资本开支 Agent"]
     IndustryReport --> Policy["政策影响 Agent"]
-    Capex --> IndustryTrend["行业发展与技术迭代 Agent"]
-    Policy --> IndustryTrend
-    IndustryTrend --> IndustryValuation["行业未来价值测算 Agent"]
+    Capex --> FutureCapex["未来资本开支预测 Agent"]
+    Policy --> FutureCapex
+    FutureCapex --> IndustryValuation["行业未来价值测算 Agent"]
 
     StockEntry --> Fetch["个股股市数据抓取 Agent"]
     Fetch --> DataAnalysis["个股股市数据分析 Agent"]
@@ -62,7 +62,7 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 | `industry_report_agent.py` | 行业研报与证据 | `industry_report_result` |
 | `upstream_capex_agent.py` | 上游资本开支记录 | `upstream_capex_result` |
 | `policy_agent.py` | 政策、监管、补贴、大事件 | `policy_result` |
-| `industry_trend_agent.py` | 研报、资本开支、政策 | `industry_trend_result` |
+| `future_capex_forecast_agent.py` | 需求/供应侧资本开支、政策量化影响 | `future_capex_forecast_result` |
 | `industry_valuation_agent.py` | 行业利润/收入与估值假设 | `industry_valuation_result` |
 | `stock_entry_agent.py` | 个股参数 | `stock_task_context` |
 | `stock_data_fetch_agent.py` | 股票、基准、行业指数代码 | `stock_market_data` |
@@ -107,7 +107,9 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 ## 6. 数据与依赖边界
 
 - `MarketDataProvider`：负责股票和指数行情，当前提供离线内存实现与可选 `yfinance` 实现。
-- `ResearchDataProvider`：按主题读取结构化研究资料，默认从初始 State 的 `research_inputs` 获取。
+- `ResearchDataProvider`：使用 Pydantic v2 的 `SourceRequest`、`SourceBatch`、`MetricFact`、`EvidenceItem` 和 `CoverageReport`。默认组合旧 mock 输入与授权文件；SEC、ECB、官方政策网页、Tushare、巨潮及 Wind/iFinD 均为可插拔适配器。
+- 海外需求侧固定为 Alphabet、Amazon、Microsoft、Meta、Oracle；NVIDIA 单列为供应侧，不进入需求侧 CapEx 总和。
+- 网络适配器统一采用超时、有限重试、限速、进程内缓存和 `as_of_date` 截断；凭据只从环境变量读取。
 - `AnalysisRepository`：负责节点审计和最终报告持久化，默认使用无副作用实现，生产环境可接 PostgreSQL。
 - Agent 只依赖协议，不直接访问数据库或第三方 API；更换数据源不会改变图结构。
 
@@ -127,7 +129,7 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 1. 结论摘要
 2. 行业分析
 3. 上游资本开支与政策影响
-4. 行业未来价值测算
+4. 未来资本开支预测与行业价值测算
 5. 公司业务与行业增长匹配度
 6. 盈利预测与估值测算
 7. 边际变化分析
@@ -159,7 +161,7 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 
 ## 11. 默认假设
 
-- 输入至少包含 `ticker` 和 `industry_name`。
+- 输入至少包含 `ticker` 和 `industry_name`；历史窗口默认五年，预测未来两年，基准币种为 CNY。
 - 默认日线窗口覆盖约 550 个自然日，以获得不少于 250 个交易日。
 - 默认大盘代码为 `000300.SS`；行业指数代码必须由调用方提供。
 - 新闻和社媒情绪只作为辅助证据，不能单独触发买卖结论。

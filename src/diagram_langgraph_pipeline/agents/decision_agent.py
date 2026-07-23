@@ -11,7 +11,7 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     score = 0
     reasons: list[str] = []
     conflicts: list[str] = []
-    industry = state.get("industry_trend_result", {})
+    industry = state.get("future_capex_forecast_result", {})
     forecast = state.get("profit_forecast_result", {})
     marginal = state.get("marginal_change_result", {})
     market_data = state.get("stock_market_data_analysis", {})

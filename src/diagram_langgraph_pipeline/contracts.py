@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Protocol
 
+from .schemas.research import DatasetKind, SourceBatch, SourceRequest
+
 
 class MarketDataProvider(Protocol):
     def fetch(
@@ -16,12 +18,30 @@ class MarketDataProvider(Protocol):
         """Return bars, valuation history, source name, and optional metadata."""
 
 
+class ResearchSourceAdapter(Protocol):
+    name: str
+    capabilities: frozenset[DatasetKind]
+
+    def fetch(self, request: SourceRequest) -> SourceBatch:
+        """Fetch one normalized source batch without mutating graph state."""
+
+
 class ResearchDataProvider(Protocol):
-    def get_topic(self, topic: str, state: dict[str, Any]) -> dict[str, Any]:
-        """Return normalized research input for one agent topic."""
+    def fetch(self, request: SourceRequest) -> SourceBatch:
+        """Return a normalized, source-aware batch for one research dataset."""
 
 
 class AnalysisRepository(Protocol):
+    def record_provider_fetch(
+        self,
+        run_id: str,
+        provider: str,
+        dataset_kind: str,
+        request_payload: dict[str, Any],
+        response_summary: dict[str, Any],
+    ) -> None:
+        """Persist one source fetch summary without credentials or full content."""
+
     def record_node_run(
         self,
         run_id: str,

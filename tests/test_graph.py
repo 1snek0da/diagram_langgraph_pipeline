@@ -13,6 +13,7 @@ def test_graph_contains_all_separate_agent_nodes():
     assert {
         "planner",
         "industry_report",
+        "future_capex_forecast",
         "stock_data_fetch",
         "stock_data_analysis",
         "company_valuation",

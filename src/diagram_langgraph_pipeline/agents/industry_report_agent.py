@@ -17,6 +17,14 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
             "value_chain": payload.get("value_chain", {}),
             "technology_routes": payload.get("technology_routes", []),
             "key_data": payload.get("key_data", []),
+            "reports": payload.get("reports", []),
+            "policy_leads": payload.get("policy_leads", []),
+            "capex_facts": payload.get("capex_facts", []),
+            "source_documents": payload.get("source_documents", []),
+            "metric_facts": payload.get("metric_facts", []),
+            "source_coverage": payload.get("source_coverage", {}),
+            "source_warnings": payload.get("source_warnings", []),
+            "source_errors": payload.get("source_errors", []),
             "evidence": evidence_from(payload, "industry_report"),
         }
     }
