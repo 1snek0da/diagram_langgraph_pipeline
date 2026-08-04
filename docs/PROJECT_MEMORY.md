@@ -85,6 +85,8 @@ review -> report -> END（通过或达到重试上限）
 - `MarketDataProvider`：行情；
 - `ResearchDataProvider`：研报、政策、公告、情绪等研究资料；
 - `AnalysisRepository`：运行、节点、决策与报告持久化。
+- `LanguageModelProvider`：2026-07-31 增加火山引擎 OpenAI 兼容可选实现，默认关闭；
+  模型输出只进入报告辅助解读，不得覆盖确定性决策和 Review。
 
 默认 Provider 适合离线和测试。`YFinanceMarketDataProvider` 可提供生产行情的基础
 接入，但真实部署仍需实现可靠的研究资料 Provider 和 PostgreSQL Repository。
@@ -184,11 +186,10 @@ PostgreSQL 设计按 `run_id` 建立可追溯链，主要包括：
 
 ### 3.1 本机工具与凭据边界
 
-2026-07-23 的历史任务记录：
+2026-07-23 的历史任务记录，以及 2026-07-30 的本项目运行更新：
 
-- Windows 已安装 PostgreSQL 16.14 客户端，二进制目录为
-  `C:\Program Files\PostgreSQL\16\bin`；没有安装 PostgreSQL Server、pgAdmin 或
-  Stack Builder，也尚未在真实 PostgreSQL 实例执行增量迁移。
+- Windows 已安装 PostgreSQL 16。2026-07-30 已在项目忽略目录初始化独立开发实例，
+  主 schema 与增量迁移均已实际执行；连接凭据只保存在 Git 忽略的本地环境文件。
 - 商业数据账户、Token、密码和 Wind/iFinD SDK 不属于仓库记忆，不得写入 State、
   日志、数据库、示例配置或 Git。凭据存在性和授权范围每次使用前都要重新检查。
 - 旧任务中的 Codex 沙箱没有附加可见终端，且其 GitHub CLI 凭据与 Windows 桌面

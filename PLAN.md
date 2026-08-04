@@ -96,6 +96,19 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 
 ## 5. 决策与风控规则
 
+### 5.1 “输入输出.docx”个股量化规则
+
+- `stock_market_data_analysis.trend_scoring` 使用 MA5/MA10 聚散、聚散方向、
+  MA5/MA10/MA20/MA60 排列、价格与 MA10/MA60 关系、量价关系和 K 线量能形态，
+  输出满分 100 的可解释分项；无法识别文档限定的阶段时不强行给完整分数。
+- `stock_technical_result.pattern_scoring` 识别震荡区间、关键突破 K 线和第一/第二
+  介入点，按突破质量 40%、介入点 60% 输出满分 10 分；综合分按趋势 70%、
+  形态标准化后 30% 计算。
+- `profit_forecast_result` 保存机构原始预测、行业地位第一次修正、季度财务诊断、
+  第二次修正和逐年调整后净利润区间。财务输入不足时保留原始预测并标记部分修正。
+- `company_valuation_result.annual_valuations` 按年度计算调整后净利润 × 最终 PE，
+  输出合理市值与上下行空间。阈值信号进入综合决策，但不直接替代风险控制。
+
 - 行业趋势向上、盈利预测上修、正向边际变化、股价均线结构向上分别增加评分。
 - 行业趋势向下、盈利预测下修、负向边际变化、股价均线结构向下分别降低评分。
 - PE 历史分位不低于 80%、情绪拥挤、价格偏离 MA20 超过 15% 时降低追买倾向。
@@ -110,7 +123,8 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 - `ResearchDataProvider`：使用 Pydantic v2 的 `SourceRequest`、`SourceBatch`、`MetricFact`、`EvidenceItem` 和 `CoverageReport`。默认组合旧 mock 输入与授权文件；SEC、ECB、官方政策网页、Tushare、巨潮及 Wind/iFinD 均为可插拔适配器。
 - 海外需求侧固定为 Alphabet、Amazon、Microsoft、Meta、Oracle；NVIDIA 单列为供应侧，不进入需求侧 CapEx 总和。
 - 网络适配器统一采用超时、有限重试、限速、进程内缓存和 `as_of_date` 截断；凭据只从环境变量读取。
-- `AnalysisRepository`：负责节点审计和最终报告持久化，默认使用无副作用实现，生产环境可接 PostgreSQL。
+- `AnalysisRepository`：负责运行、行情、节点审计、证据、决策、Review 和最终报告持久化；默认使用无副作用实现，也可注入 `PostgresAnalysisRepository`。
+- `LanguageModelProvider`：默认关闭；可通过火山引擎方舟或合规中转调用 `deepseek-v4-flash`，仅生成报告辅助解读，不参与规则评分、买卖判断或 Review。
 - Agent 只依赖协议，不直接访问数据库或第三方 API；更换数据源不会改变图结构。
 
 ## 7. 数据库设计原则
@@ -155,7 +169,7 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 1. 安装依赖并运行离线测试。
 2. 接入真实行情 Provider，确认股票和指数代码映射。
 3. 接入研报、政策、公告和情绪数据采集器，统一输出证据结构。
-4. 实现 PostgreSQL Repository，把节点输入输出和最终报告落库。
+4. 已实现 PostgreSQL Repository；部署时配置连接串，并按授权范围启用真实来源。
 5. 配置 LangGraph checkpointer，实现中断恢复与人工复核。
 6. 使用历史样本回放决策规则，校准阈值后再用于研究环境。
 

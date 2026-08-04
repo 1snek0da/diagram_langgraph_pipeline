@@ -1,6 +1,8 @@
 # 数据库关系图
 
 实线表示数据库外键；`decision_evidence_links` 和 `decision_node_links` 保证每条决策都能追溯到证据和节点执行记录。
+`provider_response_cache` 以 Provider、Dataset、规范化请求哈希和 as-of 日期建立逻辑关联，
+有意不绑定单次 `analysis_runs`；`schema_migrations` 独立记录迁移校验和。
 
 ```mermaid
 erDiagram
@@ -9,6 +11,7 @@ erDiagram
     INDUSTRIES ||--o{ ANALYSIS_RUNS : scopes
     SECURITIES ||--o{ ANALYSIS_RUNS : analyzed_in
     SECURITIES ||--o{ MARKET_BARS : has
+    SECURITIES ||--o{ INTRADAY_MARKET_BARS : has
     SECURITIES ||--o{ MARKET_VALUATION_METRICS : has
 
     SOURCE_DOCUMENTS ||--o{ EVIDENCE_ITEMS : yields
@@ -23,6 +26,8 @@ erDiagram
     INDUSTRIES ||--o{ EVIDENCE_ITEMS : supports
 
     ANALYSIS_RUNS ||--o{ NODE_RUNS : executes
+    ANALYSIS_RUNS ||--o{ LLM_INVOCATIONS : invokes
+    ANALYSIS_RUNS ||--o{ INTRADAY_MARKET_BARS : captures
     ANALYSIS_RUNS ||--|| STOCK_MARKET_ANALYSIS : produces
     ANALYSIS_RUNS ||--|| INDUSTRY_ANALYSIS_RUNS : produces
     ANALYSIS_RUNS ||--o{ UPSTREAM_CAPEX_RECORDS : records

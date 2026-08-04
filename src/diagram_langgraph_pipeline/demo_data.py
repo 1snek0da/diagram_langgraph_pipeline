@@ -8,7 +8,9 @@ from math import sin
 from typing import Any
 
 
-def make_market_payload(start_price: float, drift: float, *, days: int = 320) -> dict[str, Any]:
+def make_market_payload(
+    start_price: float, drift: float, *, days: int = 320
+) -> dict[str, Any]:
     bars = []
     valuations = []
     current = start_price
@@ -39,13 +41,32 @@ def make_market_payload(start_price: float, drift: float, *, days: int = 320) ->
                 "market_cap": current * 100_000_000,
             }
         )
-    return {"bars": bars, "valuations": valuations, "source": "demo_fixture"}
+    minute_bars = [
+        {
+            "trade_date": f"{bars[-1]['trade_date']}T09:{30 + index:02d}:00+08:00",
+            "open": current * (1 + index * 0.0001),
+            "high": current * (1.001 + index * 0.0001),
+            "low": current * (0.999 + index * 0.0001),
+            "close": current * (1 + (index + 1) * 0.0001),
+            "adj_close": current * (1 + (index + 1) * 0.0001),
+            "volume": 50_000 + index * 1_000,
+        }
+        for index in range(10)
+    ]
+    return {
+        "bars": bars,
+        "minute_bars": minute_bars,
+        "valuations": valuations,
+        "source": "demo_fixture",
+    }
 
 
 def demo_research_inputs() -> dict[str, Any]:
     """Return as-of-safe, typed fixtures without needing network credentials."""
 
-    evidence = lambda claim: [{"claim_text": claim, "source": "demo", "confidence_score": 0.8}]
+    evidence = lambda claim: [
+        {"claim_text": claim, "source": "demo", "confidence_score": 0.8}
+    ]
     capex_records: list[dict[str, Any]] = []
     company_values = {
         "alphabet": ("Alphabet", [25, 28, 32, 38]),
@@ -54,7 +75,12 @@ def demo_research_inputs() -> dict[str, Any]:
         "meta": ("Meta", [19, 27, 32, 39]),
         "oracle": ("Oracle", [9, 10, 12, 15]),
     }
-    communication_shares = [Decimal("0.22"), Decimal("0.24"), Decimal("0.26"), Decimal("0.29")]
+    communication_shares = [
+        Decimal("0.22"),
+        Decimal("0.24"),
+        Decimal("0.26"),
+        Decimal("0.29"),
+    ]
     for entity_id, (company_name, values) in company_values.items():
         for offset, total_capex in enumerate(values):
             capex_records.append(
@@ -64,7 +90,8 @@ def demo_research_inputs() -> dict[str, Any]:
                     "role": "demand",
                     "fiscal_year": 2022 + offset,
                     "total_capex": total_capex,
-                    "communication_capex": Decimal(total_capex) * communication_shares[offset],
+                    "communication_capex": Decimal(total_capex)
+                    * communication_shares[offset],
                     "currency": "USD",
                     "unit": "billion",
                     "scale": 1_000_000_000,
@@ -83,6 +110,42 @@ def demo_research_inputs() -> dict[str, Any]:
                 "unit": "billion",
                 "scale": 1_000_000_000,
                 "fact_basis": "reported",
+            }
+        )
+
+    quarterly_financials: list[dict[str, Any]] = []
+    for year, quarter, index in [
+        (2024, 1, 0),
+        (2024, 2, 1),
+        (2024, 3, 2),
+        (2024, 4, 3),
+        (2025, 1, 4),
+        (2025, 2, 5),
+        (2025, 3, 6),
+        (2025, 4, 7),
+        (2026, 1, 8),
+        (2026, 2, 9),
+    ]:
+        quarterly_financials.append(
+            {
+                "period": f"{year}Q{quarter}",
+                "fiscal_year": year,
+                "quarter": quarter,
+                "revenue": Decimal("80000000000")
+                + Decimal(index) * Decimal("12000000000"),
+                "net_profit": Decimal("8000000000")
+                + Decimal(index) * Decimal("1200000000"),
+                "adjusted_net_profit": Decimal("7600000000")
+                + Decimal(index) * Decimal("1150000000"),
+                "gross_margin": Decimal("0.34") + Decimal(index) * Decimal("0.006"),
+                "net_margin": Decimal("0.15") + Decimal(index) * Decimal("0.004"),
+                "inventory": Decimal("20") + Decimal(index * 4),
+                "prepayments": Decimal("8") + Decimal(index * 2),
+                "contract_liabilities": Decimal("10") + Decimal(index * 3),
+                "construction_in_progress": Decimal("6") + Decimal(index),
+                "research_expense": Decimal("5") + Decimal(index) * Decimal("0.5"),
+                "overseas_revenue_share": Decimal("0.62"),
+                "fx_loss": Decimal("0.3"),
             }
         )
 
@@ -138,17 +201,27 @@ def demo_research_inputs() -> dict[str, Any]:
             "revision_direction": "up",
             "forecasts": [
                 {
-                    "forecast_year": 2027,
+                    "forecast_year": year,
                     "institution": "示例券商",
                     "published_at": "2026-07-10T08:00:00+08:00",
                     "forecast_basis": "broker",
-                    "revenue_forecast": 48_000_000_000,
-                    "net_profit_forecast": 18_000_000_000,
-                    "eps_forecast": 1.8,
+                    "revenue_forecast": revenue,
+                    "net_profit_forecast": profit,
+                    "eps_forecast": eps,
                     "pe_assumption": 25,
                     "revision_pct": 0.08,
                 }
+                for year, revenue, profit, eps in (
+                    (2026, 400_000_000_000, 32_000_000_000, 3.2),
+                    (2027, 480_000_000_000, 40_000_000_000, 4.0),
+                    (2028, 560_000_000_000, 48_000_000_000, 4.8),
+                )
             ],
+            "quarterly_financials": quarterly_financials,
+            "product_information": {
+                "upgrade_shipment": True,
+                "product_mix": "800G向1.6T升级",
+            },
             "evidence": evidence("示例机构预测净利润上修"),
         },
         "marginal_change": {

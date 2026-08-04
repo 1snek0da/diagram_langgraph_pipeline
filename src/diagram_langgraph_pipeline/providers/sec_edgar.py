@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from hashlib import sha256
 import json
 import re
+from typing import Any
 
 from bs4 import BeautifulSoup
 import httpx
@@ -29,10 +30,29 @@ CAPEX_TAGS = (
     "PaymentsToAcquireProductiveAssets",
 )
 
+QUARTERLY_DURATION_TAGS: dict[str, tuple[str, ...]] = {
+    "revenue": (
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "SalesRevenueNet",
+        "Revenues",
+    ),
+    "net_profit": ("NetIncomeLoss", "ProfitLoss"),
+    "gross_profit": ("GrossProfit",),
+    "research_expense": ("ResearchAndDevelopmentExpense",),
+}
+
+QUARTERLY_INSTANT_TAGS: dict[str, tuple[str, ...]] = {
+    "inventory": ("InventoryNet",),
+    "contract_liabilities": (
+        "ContractWithCustomerLiabilityCurrent",
+        "DeferredRevenueCurrent",
+    ),
+}
+
 
 class SecEdgarAdapter:
     name = "sec_edgar"
-    capabilities = frozenset({DatasetKind.CAPEX})
+    capabilities = frozenset({DatasetKind.CAPEX, DatasetKind.PROFIT_FORECASTS})
 
     def __init__(
         self,
@@ -48,6 +68,11 @@ class SecEdgarAdapter:
         self._client = client or ResilientHttpTransport(HttpPolicy(timeout_seconds=timeout_seconds))
 
     def fetch(self, request: SourceRequest) -> SourceBatch:
+        if request.dataset_kind == DatasetKind.PROFIT_FORECASTS:
+            return self._fetch_quarterly_financials(request)
+        return self._fetch_capex(request)
+
+    def _fetch_capex(self, request: SourceRequest) -> SourceBatch:
         requested = [entity.entity_id for entity in request.entities if entity.cik]
         available: list[str] = []
         documents: list[SourceDocument] = []
@@ -81,6 +106,74 @@ class SecEdgarAdapter:
             warnings=warnings,
             errors=errors,
         )
+
+    def _fetch_quarterly_financials(self, request: SourceRequest) -> SourceBatch:
+        targets = [entity for entity in request.entities if entity.role == "target"]
+        requested = [entity.entity_id for entity in targets]
+        available: list[str] = []
+        rows: list[dict[str, Any]] = []
+        documents: list[SourceDocument] = []
+        facts: list[MetricFact] = []
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        for entity in targets:
+            if not entity.cik:
+                resolved = self._resolve_cik(entity.ticker)
+                if resolved is None:
+                    errors.append(
+                        f"{entity.name}: SEC is not applicable or no CIK was found"
+                    )
+                    continue
+                entity = entity.model_copy(update={"cik": resolved})
+            try:
+                payload = self._get_company_facts(entity.cik)
+                entity_rows, entity_facts, entity_documents = (
+                    _extract_quarterly_financials(payload, entity, request)
+                )
+                rows.extend(entity_rows)
+                facts.extend(entity_facts)
+                documents.extend(entity_documents)
+                if entity_rows:
+                    available.append(entity.entity_id)
+                if len(entity_rows) < 8:
+                    warnings.append(
+                        f"{entity.name}: SEC returned {len(entity_rows)} usable quarters; expected 8"
+                    )
+            except Exception as exc:
+                errors.append(f"{entity.name}: {type(exc).__name__}: {exc}")
+
+        rows.sort(key=lambda item: str(item.get("period_end", "")))
+        return SourceBatch(
+            data={"quarterly_financials": rows},
+            facts=facts,
+            documents=documents,
+            coverage=CoverageReport.from_items(requested, available, errors=errors),
+            warnings=warnings,
+            errors=errors,
+        )
+
+    def _resolve_cik(self, ticker: str | None) -> str | None:
+        if not ticker or "." in ticker:
+            return None
+        url = "https://www.sec.gov/files/company_tickers.json"
+        response = self._client.get(
+            url,
+            headers={
+                "User-Agent": self.user_agent,
+                "Accept-Encoding": "gzip, deflate",
+            },
+        )
+        response.raise_for_status()
+        target = ticker.upper()
+        for item in response.json().values():
+            if str(item.get("ticker", "")).upper() == target:
+                return str(item.get("cik_str", "")).zfill(10)
+        return None
+
+    def resolve_cik(self, ticker: str) -> str | None:
+        """Resolve one US ticker for metadata caching by the DB-first service."""
+        return self._resolve_cik(ticker)
 
     def _get_company_facts(self, cik: str) -> dict:
         url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
@@ -167,6 +260,290 @@ class SecEdgarAdapter:
                 )
             )
         return facts, documents
+
+
+def _extract_quarterly_financials(
+    payload: dict[str, Any], entity, request: SourceRequest
+) -> tuple[list[dict[str, Any]], list[MetricFact], list[SourceDocument]]:
+    concepts = payload.get("facts", {}).get("us-gaap", {})
+    cutoff = datetime.combine(request.as_of_date, time.max, tzinfo=timezone.utc)
+    series: dict[str, dict[tuple[int, int], dict[str, Any]]] = {}
+    for metric, tags in QUARTERLY_DURATION_TAGS.items():
+        series[metric] = _duration_quarter_series(concepts, tags, cutoff)
+    for metric, tags in QUARTERLY_INSTANT_TAGS.items():
+        series[metric] = _instant_quarter_series(concepts, tags, cutoff)
+
+    keys = set(series.get("revenue", {})) | set(series.get("net_profit", {}))
+    ordered_keys = sorted(
+        keys,
+        key=lambda key: (
+            _point_end(series, key) or date.min,
+            key,
+        ),
+    )[-8:]
+
+    rows: list[dict[str, Any]] = []
+    facts: list[MetricFact] = []
+    documents: dict[str, SourceDocument] = {}
+    for fiscal_year, quarter in ordered_keys:
+        metric_points = {
+            metric: values.get((fiscal_year, quarter))
+            for metric, values in series.items()
+        }
+        representative = next(
+            (point for point in metric_points.values() if point is not None), None
+        )
+        if representative is None:
+            continue
+        period_end = representative["period_end"]
+        revenue = _point_value(metric_points.get("revenue"))
+        net_profit = _point_value(metric_points.get("net_profit"))
+        gross_profit = _point_value(metric_points.get("gross_profit"))
+        source_ids: list[str] = []
+        filed_values: list[datetime] = []
+        row: dict[str, Any] = {
+            "entity_id": entity.entity_id,
+            "company_name": entity.name,
+            "fiscal_year": fiscal_year,
+            "quarter": quarter,
+            "period": f"FY{fiscal_year}Q{quarter}",
+            "period_end": period_end,
+            "currency": "USD",
+            "unit": "currency",
+            "scale": Decimal("1"),
+            "revenue": revenue,
+            "net_profit": net_profit,
+            "adjusted_net_profit": None,
+            "gross_profit": gross_profit,
+            "gross_margin": (
+                gross_profit / revenue
+                if gross_profit is not None and revenue not in {None, Decimal("0")}
+                else None
+            ),
+            "net_margin": (
+                net_profit / revenue
+                if net_profit is not None and revenue not in {None, Decimal("0")}
+                else None
+            ),
+            "research_expense": _point_value(
+                metric_points.get("research_expense")
+            ),
+            "inventory": _point_value(metric_points.get("inventory")),
+            "contract_liabilities": _point_value(
+                metric_points.get("contract_liabilities")
+            ),
+            "provider": "sec_edgar",
+        }
+
+        for metric, point in metric_points.items():
+            if point is None or point.get("value") is None:
+                continue
+            source_id = _quarter_source_id(entity.cik, point["accession"])
+            source_ids.append(source_id)
+            if point.get("filed_at"):
+                filed_values.append(point["filed_at"])
+            documents.setdefault(
+                source_id,
+                _quarter_source_document(entity, fiscal_year, quarter, point),
+            )
+            facts.append(
+                MetricFact(
+                    metric_key=f"quarterly_{metric}",
+                    entity_id=entity.entity_id,
+                    period_end=period_end,
+                    fiscal_year=fiscal_year,
+                    value=point["value"],
+                    currency="USD",
+                    unit="currency",
+                    basis=(
+                        FactBasis.DERIVED
+                        if point.get("derived")
+                        else FactBasis.REPORTED
+                    ),
+                    provider="sec_edgar",
+                    source_id=source_id,
+                    observed_at=point.get("filed_at"),
+                    metadata={
+                        "entity_name": entity.name,
+                        "role": entity.role,
+                        "fiscal_quarter": quarter,
+                        "xbrl_tag": point.get("tag"),
+                        "accession": point.get("accession"),
+                        "derived_from": point.get("derived_from", []),
+                    },
+                )
+            )
+        row["source_ids"] = list(dict.fromkeys(source_ids))
+        row["filed_at"] = max(filed_values) if filed_values else None
+        row["fact_basis"] = (
+            "derived"
+            if any(point and point.get("derived") for point in metric_points.values())
+            else "reported"
+        )
+        rows.append(row)
+
+    return rows, facts, list(documents.values())
+
+
+def _duration_quarter_series(
+    concepts: dict[str, Any], tags: tuple[str, ...], cutoff: datetime
+) -> dict[tuple[int, int], dict[str, Any]]:
+    tag, units = _concept_units(concepts, tags)
+    if tag is None:
+        return {}
+    quarterly: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    annual: dict[int, list[dict[str, Any]]] = {}
+    for item in units:
+        normalized = _normalized_sec_item(item, cutoff, require_start=True)
+        if normalized is None:
+            continue
+        fiscal_year = normalized["fiscal_year"]
+        fiscal_period = normalized["fiscal_period"]
+        duration_days = normalized["duration_days"]
+        normalized["tag"] = tag
+        if fiscal_period in {"Q1", "Q2", "Q3"} and 45 <= duration_days <= 150:
+            quarter = int(fiscal_period[1])
+            quarterly.setdefault((fiscal_year, quarter), []).append(normalized)
+        elif fiscal_period == "FY" and 250 <= duration_days <= 450:
+            annual.setdefault(fiscal_year, []).append(normalized)
+
+    result = {
+        key: _select_current_period(items)
+        for key, items in quarterly.items()
+    }
+    for fiscal_year, items in annual.items():
+        annual_point = _select_current_period(items)
+        components = [result.get((fiscal_year, quarter)) for quarter in (1, 2, 3)]
+        if all(point is not None for point in components):
+            component_values = [point["value"] for point in components if point]
+            annual_point = dict(annual_point)
+            annual_point["value"] = annual_point["value"] - sum(
+                component_values, Decimal("0")
+            )
+            annual_point["derived"] = True
+            annual_point["derived_from"] = [
+                point["accession"] for point in components if point
+            ] + [annual_point["accession"]]
+            result[(fiscal_year, 4)] = annual_point
+    return result
+
+
+def _instant_quarter_series(
+    concepts: dict[str, Any], tags: tuple[str, ...], cutoff: datetime
+) -> dict[tuple[int, int], dict[str, Any]]:
+    tag, units = _concept_units(concepts, tags)
+    if tag is None:
+        return {}
+    grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for item in units:
+        normalized = _normalized_sec_item(item, cutoff, require_start=False)
+        if normalized is None:
+            continue
+        fiscal_period = normalized["fiscal_period"]
+        if fiscal_period in {"Q1", "Q2", "Q3"}:
+            quarter = int(fiscal_period[1])
+        elif fiscal_period == "FY":
+            quarter = 4
+        else:
+            continue
+        normalized["tag"] = tag
+        grouped.setdefault((normalized["fiscal_year"], quarter), []).append(
+            normalized
+        )
+    return {key: _select_current_period(items) for key, items in grouped.items()}
+
+
+def _concept_units(
+    concepts: dict[str, Any], tags: tuple[str, ...]
+) -> tuple[str | None, list[dict[str, Any]]]:
+    for tag in tags:
+        units = concepts.get(tag, {}).get("units", {}).get("USD", [])
+        if units:
+            return tag, units
+    return None, []
+
+
+def _normalized_sec_item(
+    item: dict[str, Any], cutoff: datetime, *, require_start: bool
+) -> dict[str, Any] | None:
+    if item.get("form") not in {"10-Q", "10-K"} or item.get("val") is None:
+        return None
+    filed_at = _parse_datetime(item.get("filed"))
+    period_end = _parse_date(item.get("end"))
+    fiscal_year = item.get("fy")
+    if (
+        filed_at is None
+        or filed_at > cutoff
+        or period_end is None
+        or not isinstance(fiscal_year, int)
+    ):
+        return None
+    period_start = _parse_date(item.get("start"))
+    if require_start and period_start is None:
+        return None
+    return {
+        "value": Decimal(str(item["val"])),
+        "period_start": period_start,
+        "period_end": period_end,
+        "duration_days": (
+            (period_end - period_start).days + 1 if period_start else 0
+        ),
+        "fiscal_year": fiscal_year,
+        "fiscal_period": str(item.get("fp") or ""),
+        "filed_at": filed_at,
+        "accession": str(item.get("accn") or ""),
+        "form": str(item.get("form")),
+        "derived": False,
+    }
+
+
+def _select_current_period(items: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_end = max(item["period_end"] for item in items)
+    same_period = [item for item in items if item["period_end"] == latest_end]
+    return max(same_period, key=lambda item: item["filed_at"])
+
+
+def _point_end(
+    series: dict[str, dict[tuple[int, int], dict[str, Any]]],
+    key: tuple[int, int],
+) -> date | None:
+    for values in series.values():
+        point = values.get(key)
+        if point is not None:
+            return point["period_end"]
+    return None
+
+
+def _point_value(point: dict[str, Any] | None) -> Decimal | None:
+    return point.get("value") if point else None
+
+
+def _quarter_source_id(cik: str, accession: str) -> str:
+    return f"sec:{cik}:{accession}:quarterly-financials"
+
+
+def _quarter_source_document(
+    entity, fiscal_year: int, quarter: int, point: dict[str, Any]
+) -> SourceDocument:
+    accession = point["accession"]
+    source_id = _quarter_source_id(entity.cik, accession)
+    return SourceDocument(
+        source_id=source_id,
+        provider="sec_edgar",
+        source_tier=SourceTier.PRIMARY_OFFICIAL,
+        source_type=(
+            "sec_10k_xbrl" if point.get("form") == "10-K" else "sec_10q_xbrl"
+        ),
+        external_id=accession or None,
+        title=f"{entity.name} FY{fiscal_year} Q{quarter} SEC XBRL facts",
+        publisher="U.S. Securities and Exchange Commission",
+        published_at=point.get("filed_at"),
+        url=_filing_url(entity.cik, accession),
+        content_hash=sha256(source_id.encode("utf-8")).hexdigest(),
+        language="en-US",
+        license_scope="public",
+        metadata={"xbrl_tag": point.get("tag"), "derived": point.get("derived", False)},
+    )
 
 
 def _extract_annual_capex(payload: dict, entity, request: SourceRequest) -> tuple[list[MetricFact], list[SourceDocument]]:

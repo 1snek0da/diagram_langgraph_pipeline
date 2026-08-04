@@ -18,8 +18,35 @@ CREATE TABLE securities (
     market TEXT NOT NULL,
     exchange TEXT NOT NULL,
     industry_id UUID REFERENCES industries(id),
+    external_ids_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    filename TEXT NOT NULL UNIQUE,
+    checksum TEXT NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE provider_response_cache (
+    id BIGSERIAL PRIMARY KEY,
+    provider TEXT NOT NULL,
+    dataset_kind TEXT NOT NULL,
+    scope_hash TEXT NOT NULL,
+    request_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    response_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    cache_as_of_date DATE NOT NULL,
+    coverage_start DATE,
+    coverage_end DATE,
+    status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed', 'unavailable')),
+    coverage_ratio NUMERIC(8,6),
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (provider, dataset_kind, scope_hash, cache_as_of_date)
 );
 
 CREATE TABLE source_documents (
@@ -132,6 +159,49 @@ CREATE TABLE market_valuation_metrics (
     source TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (ticker, trade_date, source)
+);
+
+CREATE TABLE intraday_market_bars (
+    id BIGSERIAL PRIMARY KEY,
+    run_id UUID REFERENCES analysis_runs(id) ON DELETE SET NULL,
+    ticker TEXT NOT NULL REFERENCES securities(ticker),
+    bar_time TIMESTAMPTZ NOT NULL,
+    interval TEXT NOT NULL,
+    open_price NUMERIC(24,8),
+    high_price NUMERIC(24,8),
+    low_price NUMERIC(24,8),
+    close_price NUMERIC(24,8) NOT NULL,
+    adj_close_price NUMERIC(24,8),
+    volume NUMERIC(30,4),
+    source TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (ticker, bar_time, interval, source)
+);
+
+CREATE TABLE llm_invocations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id UUID NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    node_name TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+    provider TEXT,
+    model TEXT,
+    request_id TEXT,
+    input_hash TEXT NOT NULL,
+    candidate_char_count BIGINT NOT NULL,
+    projected_char_count BIGINT NOT NULL,
+    estimated_prompt_tokens BIGINT NOT NULL,
+    prompt_tokens BIGINT,
+    completion_tokens BIGINT,
+    cached_tokens BIGINT,
+    usage_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    projection_manifest_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_type TEXT,
+    error_message TEXT,
+    cache_hit BOOLEAN NOT NULL DEFAULT false,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ended_at TIMESTAMPTZ,
+    UNIQUE (run_id, node_name, attempt_no)
 );
 
 CREATE TABLE stock_market_analysis (
@@ -470,6 +540,12 @@ CREATE TABLE final_reports (
 );
 
 CREATE INDEX idx_market_bars_ticker_date ON market_bars (ticker, trade_date DESC);
+CREATE INDEX idx_provider_cache_lookup ON provider_response_cache
+    (provider, dataset_kind, scope_hash, cache_as_of_date DESC, expires_at DESC);
+CREATE INDEX idx_provider_cache_expiry ON provider_response_cache (expires_at);
+CREATE INDEX idx_securities_external_ids ON securities USING GIN (external_ids_json);
+CREATE INDEX idx_intraday_market_bars_ticker_time ON intraday_market_bars (ticker, bar_time DESC);
+CREATE INDEX idx_llm_invocations_run_node ON llm_invocations (run_id, node_name, attempt_no);
 CREATE INDEX idx_valuation_ticker_date ON market_valuation_metrics (ticker, trade_date DESC);
 CREATE INDEX idx_evidence_run_type ON evidence_items (run_id, evidence_type);
 CREATE INDEX idx_node_runs_run_status ON node_runs (run_id, status);

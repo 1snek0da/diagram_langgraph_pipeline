@@ -29,3 +29,8 @@ class NullRepository:
 
     def save_final_report(self, run_id: str, report_markdown: str) -> None:
         return None
+
+    def record_llm_invocation(
+        self, run_id: str, node_name: str, payload: dict[str, Any]
+    ) -> None:
+        return None

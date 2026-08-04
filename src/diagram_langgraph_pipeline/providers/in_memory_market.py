@@ -19,6 +19,7 @@ class InMemoryMarketDataProvider:
     ) -> dict[str, Any]:
         payload = deepcopy(self._payloads.get(ticker, {}))
         payload.setdefault("bars", [])
+        payload.setdefault("minute_bars", [])
         payload.setdefault("valuations", [])
         payload.setdefault("source", "in_memory")
         payload["requested_range"] = {

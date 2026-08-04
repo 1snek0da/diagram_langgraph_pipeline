@@ -4,14 +4,23 @@ from decimal import Decimal
 
 import httpx
 
+from diagram_langgraph_pipeline.agents.common import topic
+from diagram_langgraph_pipeline.dependencies import AgentDependencies
 from diagram_langgraph_pipeline.providers import (
     EcbFxAdapter,
     HttpPolicy,
     LicensedReportDirectoryAdapter,
     ResilientHttpTransport,
     SecEdgarAdapter,
+    InMemoryMarketDataProvider,
+    build_research_provider,
 )
-from diagram_langgraph_pipeline.schemas import DatasetKind, EntityRef, SourceRequest
+from diagram_langgraph_pipeline.schemas import (
+    DatasetKind,
+    EntityRef,
+    SourceBatch,
+    SourceRequest,
+)
 
 
 class StaticClient:
@@ -20,6 +29,51 @@ class StaticClient:
 
     def get(self, url, **kwargs):
         return self.callback(url, kwargs)
+
+
+def test_factory_accepts_loaded_settings_without_mutating_process_environment():
+    provider = build_research_provider(
+        {
+            "ENABLE_NETWORK_RESEARCH": "1",
+            "SEC_USER_AGENT": "tests test@example.com",
+            "PROVIDER_MAX_ATTEMPTS": "1",
+        }
+    )
+
+    assert "sec_edgar" in {adapter.name for adapter in provider.adapters}
+
+
+def test_aapl_cik_is_sent_only_to_target_sec_financial_request():
+    class CapturingProvider:
+        def __init__(self):
+            self.requests = []
+
+        def fetch(self, request):
+            self.requests.append(request)
+            data = (
+                {"forecasts": [], "quarterly_financials": []}
+                if request.topic == "profit_forecast"
+                else {"records": []}
+            )
+            return SourceBatch(data=data)
+
+    research = CapturingProvider()
+    deps = AgentDependencies(
+        market_data=InMemoryMarketDataProvider({}), research=research
+    )
+    state = {
+        "ticker": "AAPL",
+        "company_name": "Apple Inc.",
+        "as_of_date": "2026-07-31",
+    }
+
+    topic(deps, "upstream_capex", state)
+    topic(deps, "profit_forecast", state)
+
+    upstream_target = research.requests[0].entities[-1]
+    forecast_target = research.requests[1].entities[-1]
+    assert upstream_target.cik is None
+    assert forecast_target.cik == "0000320193"
 
 
 def _response(url, *, json_data=None, text=""):
@@ -131,6 +185,93 @@ def test_sec_falls_back_to_raw_10k_and_marks_extracted_when_xbrl_tag_is_missing(
     assert batch.facts[0].value == Decimal("123")
     assert batch.facts[0].scale == Decimal("1000000")
     assert any("启发式提取" in warning for warning in batch.warnings)
+
+
+def test_sec_exposes_eight_quarters_and_derives_q4_without_future_filings():
+    def duration_fact(
+        fiscal_year, fiscal_period, start, end, value, accession, form="10-Q"
+    ):
+        return {
+            "form": form,
+            "fp": fiscal_period,
+            "fy": fiscal_year,
+            "filed": f"{end[:4]}-11-01" if fiscal_period != "FY" else f"{fiscal_year + 1}-02-01",
+            "start": start,
+            "end": end,
+            "val": value,
+            "accn": accession,
+        }
+
+    revenue = []
+    profit = []
+    for year in (2024, 2025):
+        revenue.extend(
+            [
+                duration_fact(year, "Q1", f"{year}-01-01", f"{year}-03-31", 100, f"{year}-q1"),
+                duration_fact(year, "Q2", f"{year}-04-01", f"{year}-06-30", 110, f"{year}-q2"),
+                duration_fact(year, "Q3", f"{year}-07-01", f"{year}-09-30", 120, f"{year}-q3"),
+                duration_fact(year, "FY", f"{year}-01-01", f"{year}-12-31", 460, f"{year}-fy", "10-K"),
+            ]
+        )
+        profit.extend(
+            [
+                duration_fact(year, "Q1", f"{year}-01-01", f"{year}-03-31", 10, f"{year}-q1"),
+                duration_fact(year, "Q2", f"{year}-04-01", f"{year}-06-30", 11, f"{year}-q2"),
+                duration_fact(year, "Q3", f"{year}-07-01", f"{year}-09-30", 12, f"{year}-q3"),
+                duration_fact(year, "FY", f"{year}-01-01", f"{year}-12-31", 46, f"{year}-fy", "10-K"),
+            ]
+        )
+    revenue.append(
+        {
+            **duration_fact(2026, "Q1", "2026-01-01", "2026-03-31", 999, "future"),
+            "filed": "2027-01-01",
+        }
+    )
+    payload = {
+        "facts": {
+            "us-gaap": {
+                "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                    "units": {"USD": revenue}
+                },
+                "NetIncomeLoss": {"units": {"USD": profit}},
+            }
+        }
+    }
+    adapter = SecEdgarAdapter(
+        user_agent="tests test@example.com",
+        client=StaticClient(lambda url, _: _response(url, json_data=payload)),
+    )
+    request = SourceRequest(
+        dataset_kind=DatasetKind.PROFIT_FORECASTS,
+        run_id="quarters",
+        as_of_date=date(2026, 7, 21),
+        entities=[
+            EntityRef(
+                entity_id="AAPL",
+                name="Apple Inc.",
+                ticker="AAPL",
+                cik="320193",
+                role="target",
+            )
+        ],
+    )
+
+    batch = adapter.fetch(request)
+
+    rows = batch.data["quarterly_financials"]
+    assert len(rows) == 8
+    assert rows[-1]["quarter"] == 4
+    assert rows[-1]["revenue"] == Decimal("130")
+    assert rows[-1]["net_profit"] == Decimal("13")
+    assert rows[-1]["fact_basis"] == "derived"
+    assert all(row["fiscal_year"] <= 2025 for row in rows)
+    q4_facts = [
+        fact
+        for fact in batch.facts
+        if fact.fiscal_year == 2025 and fact.metadata["fiscal_quarter"] == 4
+    ]
+    assert q4_facts
+    assert all(fact.basis.value == "derived" for fact in q4_facts)
 
 
 def test_ecb_cross_rate_uses_latest_common_date_not_after_as_of():

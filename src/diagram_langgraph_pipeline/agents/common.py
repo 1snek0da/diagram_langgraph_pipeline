@@ -30,19 +30,38 @@ DEFAULT_UPSTREAM_ENTITIES = (
     EntityRef(entity_id="nvidia", name="NVIDIA", ticker="NVDA", cik="1045810", role="supply"),
 )
 
+KNOWN_SEC_CIKS = {
+    "AAPL": "320193",
+}
+
 
 def topic(deps: AgentDependencies, name: str, state: dict[str, Any]) -> dict[str, Any]:
     as_of = _date_value(state.get("as_of_date")) or date.today()
     ticker = str(state.get("ticker", "")).strip()
     entities = list(DEFAULT_UPSTREAM_ENTITIES) if name in {"industry_report", "upstream_capex"} else []
     if ticker:
+        target_cik = state.get("company_cik") or state.get("cik")
+        if not target_cik:
+            target_cik = KNOWN_SEC_CIKS.get(ticker.upper())
         entities.append(
             EntityRef(
                 entity_id=ticker,
                 name=str(state.get("company_name") or ticker),
                 ticker=ticker,
+                cik=(
+                    str(target_cik)
+                    if target_cik and name == "profit_forecast"
+                    else None
+                ),
                 role="target",
             )
+        )
+    request_start = as_of - timedelta(days=365 * 5 + 5)
+    if name in {"marginal_change", "sentiment"}:
+        request_start = (
+            _date_value(state.get("research_window_start"))
+            or as_of
+            - timedelta(days=max(30, int(state.get("market_history_days", 120))))
         )
     request = SourceRequest(
         dataset_kind=TOPIC_DATASETS[name],
@@ -51,7 +70,7 @@ def topic(deps: AgentDependencies, name: str, state: dict[str, Any]) -> dict[str
         industry_code=state.get("industry_code"),
         industry_name=state.get("industry_name"),
         entities=entities,
-        start_date=as_of - timedelta(days=365 * 5 + 5),
+        start_date=request_start,
         end_date=as_of,
         history_years=5,
         forecast_years=[as_of.year + 1, as_of.year + 2],
@@ -61,6 +80,7 @@ def topic(deps: AgentDependencies, name: str, state: dict[str, Any]) -> dict[str
             "legacy_payload": state.get("research_inputs", {}).get(name, {}),
             "licensed_report_paths": state.get("licensed_report_paths", []),
             "policy_urls": state.get("policy_urls", []),
+            "news_limit": int(state.get("news_limit", 36) or 36),
         },
     )
     batch = deps.research.fetch(request)

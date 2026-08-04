@@ -17,6 +17,7 @@ RESULT_KEYS = (
     "profit_forecast_result",
     "marginal_change_result",
     "company_valuation_result",
+    "stock_market_data_analysis",
     "sentiment_result",
 )
 
@@ -26,7 +27,12 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     for key in RESULT_KEYS:
         evidence.extend(state.get(key, {}).get("evidence", []))
 
-    market_missing = state.get("stock_market_data_analysis", {}).get("data_coverage", {}).get("missing_items", [])
+    market_missing = (
+        state.get("stock_market_data_analysis", {})
+        .get("data_coverage", {})
+        .get("missing_items", [])
+    )
+    technical_missing = state.get("stock_technical_result", {}).get("missing_items", [])
     sector_missing = state.get("sector_technical_result", {}).get("missing_items", [])
     research_missing: list[str] = []
     for key in RESULT_KEYS:
@@ -61,6 +67,15 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     return {
         "joined_research_result": joined,
         "evidence_refs": evidence,
-        "missing_items": list(dict.fromkeys([*research_missing, *market_missing, *sector_missing])),
+        "missing_items": list(
+            dict.fromkeys(
+                [
+                    *research_missing,
+                    *market_missing,
+                    *technical_missing,
+                    *sector_missing,
+                ]
+            )
+        ),
         "risk_points": list(dict.fromkeys(risks)),
     }

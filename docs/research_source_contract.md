@@ -79,9 +79,12 @@ gh auth status
 - `future_capex_forecast_result`：未来两年 bear/base/bull、历史区间、方法、置信度和缺失项。
 - `industry_valuation_result`：原币、汇率、CNY 金额、估值区间、当前行业市值和差异。
 - `business_result`：公司类型、分类证据、收入构成、排名、基础及调整后 PE。
-- `profit_forecast_result`：按机构、发布日期、预测年度和口径保存预测并隔离未来数据。
+- `profit_forecast_result`：按机构、发布日期、预测年度和口径保存预测并隔离未来数据；
+  可选接收 `quarterly_financials`（最近季度的利润、利润质量、资产负债与费用指标）和
+  `product_information`，输出行业地位第一次修正、季度诊断、第二次修正及逐年利润区间。
 - `marginal_change_result`：订单、认证、产能、客户、产品、管理层和政策事件。
-- `company_valuation_result`：预测利润、最终 PE 区间、合理市值区间和上下行空间。
+- `company_valuation_result`：预测利润、最终 PE 区间、逐年合理市值、上下行空间和
+  文档阈值信号；阈值信号不得绕过综合决策与证据约束。
 
 所有新输出只使用 `future_capex_forecast_result`；旧名称仅允许在调用方迁移前的输入
 兼容边界处理，不再由图或报告产生。

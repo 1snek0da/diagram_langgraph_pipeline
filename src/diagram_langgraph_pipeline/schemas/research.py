@@ -180,9 +180,15 @@ class CoverageReport(BaseModel):
     ) -> "CoverageReport":
         requested_unique = list(dict.fromkeys(requested))
         available_unique = list(dict.fromkeys(available))
-        missing = [item for item in requested_unique if item not in set(available_unique)]
+        missing = [
+            item for item in requested_unique if item not in set(available_unique)
+        ]
         covered = set(requested_unique) & set(available_unique)
-        ratio = Decimal(len(covered)) / Decimal(len(requested_unique)) if requested_unique else Decimal("1")
+        ratio = (
+            Decimal(len(covered)) / Decimal(len(requested_unique))
+            if requested_unique
+            else Decimal("1")
+        )
         return cls(
             requested_items=requested_unique,
             available_items=available_unique,
@@ -276,7 +282,9 @@ class PolicyEventInput(BaseModel):
 
 
 class PolicyInput(TopicInputBase):
-    direction: Literal["positive", "neutral", "negative", "supportive", "restrictive"] = "neutral"
+    direction: Literal[
+        "positive", "neutral", "negative", "supportive", "restrictive"
+    ] = "neutral"
     magnitude: Literal["small", "large", "unknown"] = "unknown"
     impact_horizon: str = "unknown"
     affected_metrics: list[str] = Field(default_factory=list)
@@ -326,7 +334,9 @@ class ProfitForecastRecordInput(BaseModel):
     forecast_year: int
     institution: str | None = None
     published_at: datetime | None = None
-    forecast_basis: Literal["company_guidance", "broker", "consensus", "model", "manual"] = "manual"
+    forecast_basis: Literal[
+        "company_guidance", "broker", "consensus", "model", "manual"
+    ] = "manual"
     currency: str = "CNY"
     revenue_forecast: Decimal | None = None
     net_profit_forecast: Decimal | None = None
@@ -340,12 +350,23 @@ class ProfitForecastInput(TopicInputBase):
     forecasts: list[ProfitForecastRecordInput] = Field(default_factory=list)
     revision_direction: Literal["up", "unchanged", "down"] | None = None
     consensus_summary: str = "未提供一致预期"
+    quarterly_financials: list[dict[str, Any]] = Field(default_factory=list)
+    product_information: dict[str, Any] = Field(default_factory=dict)
 
 
 class MarginalEventInput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    event_type: Literal["order", "certification", "capacity", "customer", "product", "management", "policy", "other"]
+    event_type: Literal[
+        "order",
+        "certification",
+        "capacity",
+        "customer",
+        "product",
+        "management",
+        "policy",
+        "other",
+    ]
     event_summary: str
     event_date: date | None = None
     published_at: datetime | None = None
