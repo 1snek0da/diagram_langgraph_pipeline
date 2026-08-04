@@ -16,9 +16,9 @@ flowchart TD
     IndustryEntry --> IndustryReport["行业研报解析 Agent"]
     IndustryReport --> Capex["上游资本开支 Agent"]
     IndustryReport --> Policy["政策影响 Agent"]
-    Capex --> IndustryTrend["行业发展与技术迭代 Agent"]
-    Policy --> IndustryTrend
-    IndustryTrend --> IndustryValuation["行业未来价值测算 Agent"]
+    Capex --> FutureCapex["未来资本开支预测 Agent"]
+    Policy --> FutureCapex
+    FutureCapex --> IndustryValuation["行业未来价值测算 Agent"]
 
     StockEntry --> Fetch["个股股市数据抓取 Agent"]
     Fetch --> DataAnalysis["个股股市数据分析 Agent"]
@@ -62,7 +62,7 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 | `industry_report_agent.py` | 行业研报与证据 | `industry_report_result` |
 | `upstream_capex_agent.py` | 上游资本开支记录 | `upstream_capex_result` |
 | `policy_agent.py` | 政策、监管、补贴、大事件 | `policy_result` |
-| `industry_trend_agent.py` | 研报、资本开支、政策 | `industry_trend_result` |
+| `future_capex_forecast_agent.py` | 需求/供应侧资本开支、政策量化影响 | `future_capex_forecast_result` |
 | `industry_valuation_agent.py` | 行业利润/收入与估值假设 | `industry_valuation_result` |
 | `stock_entry_agent.py` | 个股参数 | `stock_task_context` |
 | `stock_data_fetch_agent.py` | 股票、基准、行业指数代码 | `stock_market_data` |
@@ -96,6 +96,19 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 
 ## 5. 决策与风控规则
 
+### 5.1 “输入输出.docx”个股量化规则
+
+- `stock_market_data_analysis.trend_scoring` 使用 MA5/MA10 聚散、聚散方向、
+  MA5/MA10/MA20/MA60 排列、价格与 MA10/MA60 关系、量价关系和 K 线量能形态，
+  输出满分 100 的可解释分项；无法识别文档限定的阶段时不强行给完整分数。
+- `stock_technical_result.pattern_scoring` 识别震荡区间、关键突破 K 线和第一/第二
+  介入点，按突破质量 40%、介入点 60% 输出满分 10 分；综合分按趋势 70%、
+  形态标准化后 30% 计算。
+- `profit_forecast_result` 保存机构原始预测、行业地位第一次修正、季度财务诊断、
+  第二次修正和逐年调整后净利润区间。财务输入不足时保留原始预测并标记部分修正。
+- `company_valuation_result.annual_valuations` 按年度计算调整后净利润 × 最终 PE，
+  输出合理市值与上下行空间。阈值信号进入综合决策，但不直接替代风险控制。
+
 - 行业趋势向上、盈利预测上修、正向边际变化、股价均线结构向上分别增加评分。
 - 行业趋势向下、盈利预测下修、负向边际变化、股价均线结构向下分别降低评分。
 - PE 历史分位不低于 80%、情绪拥挤、价格偏离 MA20 超过 15% 时降低追买倾向。
@@ -107,8 +120,11 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 ## 6. 数据与依赖边界
 
 - `MarketDataProvider`：负责股票和指数行情，当前提供离线内存实现与可选 `yfinance` 实现。
-- `ResearchDataProvider`：按主题读取结构化研究资料，默认从初始 State 的 `research_inputs` 获取。
-- `AnalysisRepository`：负责节点审计和最终报告持久化，默认使用无副作用实现，生产环境可接 PostgreSQL。
+- `ResearchDataProvider`：使用 Pydantic v2 的 `SourceRequest`、`SourceBatch`、`MetricFact`、`EvidenceItem` 和 `CoverageReport`。默认组合旧 mock 输入与授权文件；SEC、ECB、官方政策网页、Tushare、巨潮及 Wind/iFinD 均为可插拔适配器。
+- 海外需求侧固定为 Alphabet、Amazon、Microsoft、Meta、Oracle；NVIDIA 单列为供应侧，不进入需求侧 CapEx 总和。
+- 网络适配器统一采用超时、有限重试、限速、进程内缓存和 `as_of_date` 截断；凭据只从环境变量读取。
+- `AnalysisRepository`：负责运行、行情、节点审计、证据、决策、Review 和最终报告持久化；默认使用无副作用实现，也可注入 `PostgresAnalysisRepository`。
+- `LanguageModelProvider`：默认关闭；可通过火山引擎方舟或合规中转调用 `deepseek-v4-flash`，仅生成报告辅助解读，不参与规则评分、买卖判断或 Review。
 - Agent 只依赖协议，不直接访问数据库或第三方 API；更换数据源不会改变图结构。
 
 ## 7. 数据库设计原则
@@ -127,7 +143,7 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 1. 结论摘要
 2. 行业分析
 3. 上游资本开支与政策影响
-4. 行业未来价值测算
+4. 未来资本开支预测与行业价值测算
 5. 公司业务与行业增长匹配度
 6. 盈利预测与估值测算
 7. 边际变化分析
@@ -153,13 +169,13 @@ LangGraph 使用 `add_edge([前驱列表], 汇合节点)` 实现真正的等待�
 1. 安装依赖并运行离线测试。
 2. 接入真实行情 Provider，确认股票和指数代码映射。
 3. 接入研报、政策、公告和情绪数据采集器，统一输出证据结构。
-4. 实现 PostgreSQL Repository，把节点输入输出和最终报告落库。
+4. 已实现 PostgreSQL Repository；部署时配置连接串，并按授权范围启用真实来源。
 5. 配置 LangGraph checkpointer，实现中断恢复与人工复核。
 6. 使用历史样本回放决策规则，校准阈值后再用于研究环境。
 
 ## 11. 默认假设
 
-- 输入至少包含 `ticker` 和 `industry_name`。
+- 输入至少包含 `ticker` 和 `industry_name`；历史窗口默认五年，预测未来两年，基准币种为 CNY。
 - 默认日线窗口覆盖约 550 个自然日，以获得不少于 250 个交易日。
 - 默认大盘代码为 `000300.SS`；行业指数代码必须由调用方提供。
 - 新闻和社媒情绪只作为辅助证据，不能单独触发买卖结论。

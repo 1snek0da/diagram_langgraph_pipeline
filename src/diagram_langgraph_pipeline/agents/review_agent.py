@@ -8,9 +8,11 @@ from ..dependencies import AgentDependencies
 
 
 REQUIRED_RESULTS = {
+    "future_capex_forecast_result": "缺少未来资本开支预测",
     "industry_valuation_result": "缺少行业价值测算",
     "company_valuation_result": "缺少个股估值测算",
     "stock_market_data_analysis": "缺少个股市场数据分析",
+    "stock_technical_result": "缺少个股技术形态分析",
     "index_analysis_result": "缺少大盘分析",
     "sector_technical_result": "缺少板块技术分析",
     "sentiment_result": "缺少市场情绪分析",
@@ -26,13 +28,31 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     if len(state.get("evidence_refs", [])) < 3:
         missing.append("可追溯证据少于 3 条")
 
-    coverage = state.get("stock_market_data_analysis", {}).get("data_coverage", {}).get("coverage_ratio", 0.0)
+    coverage = (
+        state.get("stock_market_data_analysis", {})
+        .get("data_coverage", {})
+        .get("coverage_ratio", 0.0)
+    )
+    industry_coverage = (
+        state.get("upstream_capex_result", {})
+        .get("company_coverage", {})
+        .get("coverage_ratio", 0.0)
+    )
     completeness = max(0.0, 1.0 - len(set(missing)) * 0.08)
     evidence_score = min(1.0, len(state.get("evidence_refs", [])) / 6)
-    logic_score = 0.9 if state.get("decision_result", {}).get("conflict_points") is not None else 0.5
+    logic_score = (
+        0.9
+        if state.get("decision_result", {}).get("conflict_points") is not None
+        else 0.5
+    )
     retry_count = int(state.get("retry_count", 0))
     max_retries = int(state.get("max_retries", 2))
-    passed = completeness >= 0.75 and evidence_score >= 0.5 and coverage >= 0.8
+    passed = (
+        completeness >= 0.75
+        and evidence_score >= 0.5
+        and coverage >= 0.8
+        and industry_coverage >= 0.6
+    )
     needs_retry = not passed and retry_count < max_retries
     next_retry_count = retry_count + 1 if needs_retry else retry_count
     unique_missing = list(dict.fromkeys(missing))
@@ -47,8 +67,11 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
             "evidence_score": round(evidence_score, 4),
             "logic_score": logic_score,
             "market_data_coverage": coverage,
+            "industry_company_coverage": industry_coverage,
             "missing_items": unique_missing,
             "retry_tasks": [f"补采：{item}" for item in unique_missing],
-            "review_comment": "校验通过" if passed else "证据或数据覆盖不足，报告必须降低置信度",
+            "review_comment": (
+                "校验通过" if passed else "证据或数据覆盖不足，报告必须降低置信度"
+            ),
         },
     }

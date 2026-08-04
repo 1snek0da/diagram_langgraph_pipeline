@@ -22,7 +22,13 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
         "retry_count": int(state.get("retry_count", 0)),
         "max_retries": int(state.get("max_retries", 2)),
         "planner_tasks": {
-            "industry": ["industry_report", "upstream_capex", "policy", "industry_trend", "industry_valuation"],
+            "industry": [
+                "industry_report",
+                "upstream_capex",
+                "policy",
+                "future_capex_forecast",
+                "industry_valuation",
+            ],
             "stock": [
                 "stock_data_fetch",
                 "stock_data_analysis",

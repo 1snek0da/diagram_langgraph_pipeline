@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 
 RETURN_WINDOWS = (5, 20, 60, 120, 250)
-MA_WINDOWS = (20, 60, 120, 250)
+MA_WINDOWS = (5, 10, 20, 60, 120, 250)
 
 
 def analyze_market_payload(
@@ -17,10 +17,16 @@ def analyze_market_payload(
     sector_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     bars = normalize_bars(payload.get("bars", []))
+    technical_bars = normalize_bars(
+        payload.get("technical_bars") or payload.get("bars", [])
+    )
+    minute_bars = normalize_bars(payload.get("minute_bars", []))
     valuations = normalize_valuations(payload.get("valuations", []))
-    closes = [_price(bar) for bar in bars]
+    closes = [_price(bar) for bar in technical_bars]
 
-    returns = {f"return_{window}d": _period_return(closes, window) for window in RETURN_WINDOWS}
+    returns = {
+        f"return_{window}d": _period_return(closes, window) for window in RETURN_WINDOWS
+    }
     ma_status = {f"ma{window}": _ma_position(closes, window) for window in MA_WINDOWS}
     volatility_20d = _annualized_volatility(closes[-21:])
     max_drawdown = _max_drawdown(closes)
@@ -33,15 +39,19 @@ def analyze_market_payload(
         "vs_sector": _relative_returns(closes, sector_payload),
     }
 
-    expected_days = 251
+    expected_days = max(
+        1, int(payload.get("metadata", {}).get("requested_trading_days") or 251)
+    )
     coverage_ratio = min(len(bars) / expected_days, 1.0)
     missing: list[str] = []
     if len(bars) < 21:
         missing.append("至少需要 21 个交易日计算短期趋势与波动")
-    if len(bars) < 251:
+    if len(technical_bars) < 251:
         missing.append("不足 251 个交易日，250 日收益或均线可能缺失")
     if len(valuations) < 20:
         missing.append("估值历史样本不足 20 条，历史分位可信度较低")
+    if not minute_bars:
+        missing.append("缺少盘中K线，无法核验盘中突破状态")
     if benchmark_payload is None:
         missing.append("缺少大盘指数行情，无法计算大盘超额收益")
     if sector_payload is None:
@@ -58,14 +68,48 @@ def analyze_market_payload(
         "relative_strength": relative_strength,
         "abnormal_events": abnormal_events,
         "latest_close": closes[-1] if closes else None,
+        "market_snapshot": {
+            "latest_daily_close": closes[-1] if closes else None,
+            "latest_intraday_close": _price(minute_bars[-1]) if minute_bars else None,
+            "pe_ttm": valuation_percentiles.get("pe_ttm", {}).get("current"),
+            "pb": valuation_percentiles.get("pb", {}).get("current"),
+            "market_cap": next(
+                (
+                    _to_float(row.get("market_cap"))
+                    for row in reversed(valuations)
+                    if _to_float(row.get("market_cap")) is not None
+                ),
+                None,
+            ),
+        },
         "data_coverage": {
             "bar_count": len(bars),
+            "technical_bar_count": len(technical_bars),
+            "minute_bar_count": len(minute_bars),
             "valuation_count": len(valuations),
             "coverage_ratio": round(coverage_ratio, 4),
             "source": payload.get("source", "unknown"),
+            "requested_trading_days": expected_days,
+            "daily_coverage_complete": len(bars) >= expected_days,
+            "technical_requested_trading_days": int(
+                payload.get("metadata", {}).get(
+                    "technical_requested_trading_days", 251
+                )
+            ),
+            "technical_coverage_complete": len(technical_bars) >= 251,
+            "intraday_interval": payload.get("metadata", {}).get(
+                "intraday_interval"
+            ),
+            "intraday_actual_bars_per_day": _intraday_bars_per_day(minute_bars),
             "missing_items": missing,
         },
     }
+
+
+def _intraday_bars_per_day(bars: list[dict[str, Any]]) -> float:
+    dates = {str(item.get("trade_date", ""))[:10] for item in bars}
+    dates.discard("")
+    return round(len(bars) / len(dates), 2) if dates else 0.0
 
 
 def normalize_bars(raw_bars: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -107,7 +151,11 @@ def _period_return(closes: list[float], window: int) -> float | None:
 
 def _ma_position(closes: list[float], window: int) -> dict[str, Any]:
     if len(closes) < window:
-        return {"value": None, "price_position": "insufficient_data", "distance_pct": None}
+        return {
+            "value": None,
+            "price_position": "insufficient_data",
+            "distance_pct": None,
+        }
     value = mean(closes[-window:])
     distance = closes[-1] / value - 1
     return {
@@ -120,7 +168,9 @@ def _ma_position(closes: list[float], window: int) -> dict[str, Any]:
 def _annualized_volatility(closes: list[float]) -> float | None:
     if len(closes) < 3:
         return None
-    log_returns = [log(current / previous) for previous, current in zip(closes, closes[1:])]
+    log_returns = [
+        log(current / previous) for previous, current in zip(closes, closes[1:])
+    ]
     return round(pstdev(log_returns) * sqrt(252), 6)
 
 
@@ -145,7 +195,9 @@ def _atr(bars: list[dict[str, Any]], window: int) -> dict[str, float | None]:
         if high is None or low is None:
             continue
         previous_close = _price(previous)
-        true_ranges.append(max(high - low, abs(high - previous_close), abs(low - previous_close)))
+        true_ranges.append(
+            max(high - low, abs(high - previous_close), abs(low - previous_close))
+        )
     if not true_ranges:
         return {"value": None, "percent": None}
     value = mean(true_ranges)
@@ -183,7 +235,10 @@ def _valuation_percentiles(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for key in ("pe_ttm", "pb", "ps_ttm"):
         values = [_to_float(row.get(key)) for row in rows]
         valid = [value for value in values if value is not None and value > 0]
-        current = next((value for value in reversed(values) if value is not None and value > 0), None)
+        current = next(
+            (value for value in reversed(values) if value is not None and value > 0),
+            None,
+        )
         percentile = None
         if current is not None and len(valid) >= 2:
             percentile = sum(value <= current for value in valid) / len(valid)
@@ -199,7 +254,9 @@ def _abnormal_events(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     if len(bars) < 2:
         return events
-    baseline_volumes = [float(row["volume"]) for row in bars[-61:-1] if row.get("volume")]
+    baseline_volumes = [
+        float(row["volume"]) for row in bars[-61:-1] if row.get("volume")
+    ]
     baseline = mean(baseline_volumes) if baseline_volumes else 0.0
     for previous, current in zip(bars[-21:-1], bars[-20:]):
         previous_close = _price(previous)
@@ -209,14 +266,24 @@ def _abnormal_events(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
         gap = open_price / previous_close - 1 if open_price else 0.0
         volume_ratio = float(current["volume"]) / baseline if baseline else 0.0
         if abs(gap) >= 0.03:
-            events.append({"date": current["trade_date"], "type": "gap", "value": round(gap, 6)})
+            events.append(
+                {"date": current["trade_date"], "type": "gap", "value": round(gap, 6)}
+            )
         if abs(daily_return) >= 0.07:
             events.append(
-                {"date": current["trade_date"], "type": "large_daily_move", "value": round(daily_return, 6)}
+                {
+                    "date": current["trade_date"],
+                    "type": "large_daily_move",
+                    "value": round(daily_return, 6),
+                }
             )
         if volume_ratio >= 2.5:
             events.append(
-                {"date": current["trade_date"], "type": "abnormal_volume", "value": round(volume_ratio, 4)}
+                {
+                    "date": current["trade_date"],
+                    "type": "abnormal_volume",
+                    "value": round(volume_ratio, 4),
+                }
             )
     for window in MA_WINDOWS:
         if len(bars) < window + 1:
@@ -225,22 +292,39 @@ def _abnormal_events(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
         previous_ma = mean(closes[-window - 1 : -1])
         current_ma = mean(closes[-window:])
         if closes[-2] <= previous_ma < closes[-1]:
-            events.append({"date": bars[-1]["trade_date"], "type": f"break_above_ma{window}"})
+            events.append(
+                {"date": bars[-1]["trade_date"], "type": f"break_above_ma{window}"}
+            )
         elif closes[-2] >= previous_ma > closes[-1]:
-            events.append({"date": bars[-1]["trade_date"], "type": f"break_below_ma{window}"})
+            events.append(
+                {"date": bars[-1]["trade_date"], "type": f"break_below_ma{window}"}
+            )
     return events
 
 
-def _relative_returns(closes: list[float], payload: dict[str, Any] | None) -> dict[str, float | None]:
+def _relative_returns(
+    closes: list[float], payload: dict[str, Any] | None
+) -> dict[str, float | None]:
     if not payload:
         return {f"excess_return_{window}d": None for window in (20, 60, 120, 250)}
-    benchmark = [_price(row) for row in normalize_bars(payload.get("bars", []))]
+    benchmark = [
+        _price(row)
+        for row in normalize_bars(
+            payload.get("technical_bars") or payload.get("bars", [])
+        )
+    ]
     result: dict[str, float | None] = {}
     for window in (20, 60, 120, 250):
         stock_return = _period_return(closes, window)
         benchmark_return = _period_return(benchmark, window)
-        value = None if stock_return is None or benchmark_return is None else stock_return - benchmark_return
-        result[f"excess_return_{window}d"] = round(value, 6) if value is not None else None
+        value = (
+            None
+            if stock_return is None or benchmark_return is None
+            else stock_return - benchmark_return
+        )
+        result[f"excess_return_{window}d"] = (
+            round(value, 6) if value is not None else None
+        )
     return result
 
 

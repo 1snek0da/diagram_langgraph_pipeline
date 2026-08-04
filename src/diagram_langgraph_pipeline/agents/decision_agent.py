@@ -11,11 +11,12 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     score = 0
     reasons: list[str] = []
     conflicts: list[str] = []
-    industry = state.get("industry_trend_result", {})
+    industry = state.get("future_capex_forecast_result", {})
     forecast = state.get("profit_forecast_result", {})
     marginal = state.get("marginal_change_result", {})
     market_data = state.get("stock_market_data_analysis", {})
     technical = state.get("stock_technical_result", {})
+    company_valuation = state.get("company_valuation_result", {})
     index = state.get("index_analysis_result", {})
     sentiment = state.get("sentiment_result", {})
 
@@ -48,7 +49,9 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
         score -= 1
         reasons.append("股价位于主要均线之下")
 
-    pe_percentile = market_data.get("valuation_percentile", {}).get("pe_ttm", {}).get("percentile")
+    pe_percentile = (
+        market_data.get("valuation_percentile", {}).get("pe_ttm", {}).get("percentile")
+    )
     high_valuation = pe_percentile is not None and pe_percentile >= 0.8
     crowded = sentiment.get("crowding_risk") == "high"
     high_position = bool(technical.get("high_position_risk"))
@@ -64,6 +67,25 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     if index.get("risk_preference") == "risk_off":
         score -= 2
         conflicts.append("大盘处于 risk-off 环境，个股正面信号需折价")
+
+    valuation_signal = company_valuation.get("investment_signal", {}).get("signal")
+    if valuation_signal == "strong_buy":
+        score += 2
+        reasons.append("逐年调整后盈利与PE测算显示较大的未来市值空间")
+    elif valuation_signal == "buy":
+        score += 1
+        reasons.append("逐年估值空间达到文档定义的买入阈值")
+    elif valuation_signal == "sell":
+        score -= 2
+        conflicts.append("当前市值高于2027年合理市值基准")
+
+    technical_signal = technical.get("composite_scoring", {}).get("signal_strength")
+    if technical_signal == "strong":
+        score += 1
+        reasons.append("趋势与突破形态综合评分为强信号")
+    elif technical_signal == "avoid_entry":
+        score -= 1
+        conflicts.append("趋势与形态综合评分不满足介入条件")
 
     missing = state.get("missing_items", [])
     coverage = market_data.get("data_coverage", {}).get("coverage_ratio", 0.0)
@@ -98,7 +120,13 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
         "decision_result": {
             "action_bias": action,
             "score": score,
-            "conviction": "high" if confidence >= 0.75 else "medium" if confidence >= 0.5 else "low",
+            "document_valuation_signal": valuation_signal,
+            "technical_composite_signal": technical_signal,
+            "conviction": (
+                "high"
+                if confidence >= 0.75
+                else "medium" if confidence >= 0.5 else "low"
+            ),
             "confidence_score": confidence,
             "buy_zone": {"reference_support": support},
             "sell_zone": {"reference_resistance": resistance},

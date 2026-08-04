@@ -8,7 +8,7 @@ DEPS = AgentDependencies(market_data=InMemoryMarketDataProvider({}))
 
 def test_high_valuation_and_high_position_prevent_chasing():
     state = {
-        "industry_trend_result": {"trend": "positive"},
+        "future_capex_forecast_result": {"trend": "positive"},
         "profit_forecast_result": {"revision_direction": "up"},
         "marginal_change_result": {"direction": "positive"},
         "stock_market_data_analysis": {
