@@ -32,6 +32,7 @@ from .agents import (
 )
 from .dependencies import AgentDependencies
 from .llm_orchestration import LLMNodeOrchestrator
+from .routing import TaskType, get_execution_plan
 from .state import DiagramBasedResearchState
 from .contracts import RunEvent
 
@@ -39,13 +40,18 @@ from .contracts import RunEvent
 NodeFunction = Callable[[dict[str, Any], AgentDependencies], dict[str, Any]]
 
 
-def build_research_graph(deps: AgentDependencies, checkpointer: Any = None) -> Any:
-    """Build and compile the complete LangGraph workflow."""
+def build_research_graph(
+    deps: AgentDependencies,
+    task_type: TaskType | str = TaskType.FULL,
+    checkpointer: Any = None,
+) -> Any:
+    """Build and compile the workflow selected by the task execution plan."""
     try:
         from langgraph.graph import END, START, StateGraph
     except ImportError as exc:
         raise RuntimeError('LangGraph is required. Run: pip install -e ".[dev]"') from exc
 
+    plan = get_execution_plan(task_type)
     graph = StateGraph(DiagramBasedResearchState)
     nodes: dict[str, NodeFunction] = {
         "planner": planner_agent.run,
@@ -73,48 +79,21 @@ def build_research_graph(deps: AgentDependencies, checkpointer: Any = None) -> A
         "report": report_agent.run,
     }
     llm_orchestrator = LLMNodeOrchestrator(deps, max_concurrency=3)
-    for node_name, function in nodes.items():
+    for node_name in plan.enabled_nodes:
         graph.add_node(
-            node_name, _instrument(node_name, function, deps, llm_orchestrator)
+            node_name,
+            _instrument(node_name, nodes[node_name], deps, llm_orchestrator),
         )
 
-    graph.add_edge(START, "planner")
-    graph.add_edge("planner", "industry_entry")
-    graph.add_edge("planner", "stock_entry")
-    graph.add_edge("planner", "market_entry")
-
-    graph.add_edge("industry_entry", "industry_report")
-    graph.add_edge("industry_report", "upstream_capex")
-    graph.add_edge("industry_report", "policy")
-    graph.add_edge(["upstream_capex", "policy"], "future_capex_forecast")
-    graph.add_edge("future_capex_forecast", "industry_valuation")
-
-    graph.add_edge("stock_entry", "stock_data_fetch")
-    graph.add_edge("stock_entry", "business")
-    graph.add_edge("stock_data_fetch", "stock_data_analysis")
-    graph.add_edge("business", "profit_forecast")
-    graph.add_edge("business", "marginal_change")
-    graph.add_edge(["profit_forecast", "marginal_change", "stock_data_analysis"], "company_valuation")
-    graph.add_edge("stock_data_analysis", "stock_technical")
-
-    graph.add_edge("market_entry", "index_analysis")
-    graph.add_edge("market_entry", "sector_technical")
-    graph.add_edge("market_entry", "sentiment")
-
-    graph.add_edge(
-        [
-            "industry_valuation",
-            "company_valuation",
-            "stock_technical",
-            "stock_data_analysis",
-            "index_analysis",
-            "sector_technical",
-            "sentiment",
-        ],
-        "research_join",
-    )
-    graph.add_edge("research_join", "decision")
-    graph.add_edge("decision", "review")
+    for source, target in plan.edges:
+        resolved_source = (
+            START
+            if source == "__start__"
+            else list(source)
+            if isinstance(source, tuple)
+            else source
+        )
+        graph.add_edge(resolved_source, target)
     graph.add_conditional_edges(
         "review",
         route_after_review,
@@ -160,6 +139,7 @@ def _instrument(
                         str(output["final_markdown"]), all_results, state
                     )
                     deps.repository.save_final_report(run_id, output["final_markdown"])
+            output = {**output, "completed_nodes": [name]}
             deps.repository.record_node_run(run_id, name, "completed", dict(state), output)
             deps.events.emit(
                 RunEvent(
@@ -171,14 +151,17 @@ def _instrument(
             )
             return output
         except Exception as exc:
-            deps.repository.record_node_run(run_id, name, "failed", dict(state), None, str(exc))
+            failure_output = {"failed_nodes": [name]}
+            deps.repository.record_node_run(
+                run_id, name, "failed", dict(state), failure_output, str(exc)
+            )
             deps.events.emit(
                 RunEvent(
                     event_type="node",
                     stage=name,
                     status="failed",
                     message=f"节点 {name} 失败",
-                    metadata={"error_type": type(exc).__name__},
+                    metadata={"error_type": type(exc).__name__, "failed_nodes": [name]},
                 )
             )
             raise
