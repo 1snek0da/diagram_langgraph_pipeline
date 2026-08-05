@@ -79,6 +79,47 @@ def test_marginal_change_provider_failure_is_a_structured_skip(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    ("source_errors", "source_warnings"),
+    [
+        (["secondary provider unavailable"], []),
+        ([], ["secondary provider returned partial coverage"]),
+    ],
+    ids=["source-errors", "source-warnings"],
+)
+def test_trustworthy_event_completes_despite_source_diagnostics(
+    monkeypatch, source_errors, source_warnings
+):
+    monkeypatch.setattr(
+        marginal_change_agent,
+        "topic",
+        lambda *args, **kwargs: {
+            "events": [
+                {
+                    "event_type": "order",
+                    "event_summary": "as-of-safe order",
+                    "published_at": "2026-08-04T09:00:00+08:00",
+                    "impact_direction": "positive",
+                }
+            ],
+            "source_errors": source_errors,
+            "source_warnings": source_warnings,
+        },
+    )
+
+    result = marginal_change_agent.run({"as_of_date": "2026-08-05"}, DEPS)
+
+    marginal = result["marginal_change_result"]
+    assert marginal["status"] == "completed"
+    assert marginal["skip_reason"] is None
+    assert marginal["source_errors"] == source_errors
+    assert marginal["source_warnings"] == source_warnings
+    assert result["optional_node_statuses"]["marginal_change"] == {
+        "status": "completed",
+        "reason": None,
+    }
+
+
 def test_marginal_change_programming_error_is_not_swallowed(monkeypatch):
     def broken_topic(*args, **kwargs):
         raise TypeError("contract bug")
