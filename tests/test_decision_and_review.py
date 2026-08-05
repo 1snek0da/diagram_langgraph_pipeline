@@ -1,3 +1,5 @@
+import pytest
+
 from diagram_langgraph_pipeline.agents import decision_agent, review_agent
 from diagram_langgraph_pipeline.dependencies import AgentDependencies
 from diagram_langgraph_pipeline.providers import InMemoryMarketDataProvider
@@ -178,3 +180,185 @@ def test_review_creates_structured_retry_for_missing_required_output():
             "reason": "缺少必需结果：stock_technical_result",
         }
     ]
+
+
+def test_required_output_on_skipped_node_still_fails_without_retrying_node():
+    state = {
+        "task_type": "technical",
+        "required_outputs": [
+            "stock_market_data_analysis",
+            "stock_technical_result",
+        ],
+        "skipped_nodes": ["stock_technical"],
+        "stock_market_data_analysis": {
+            "data_coverage": {"coverage_ratio": 1.0}
+        },
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+
+    result = review_agent.run(state, DEPS)["review_result"]
+
+    assert result["needs_retry"] is True
+    assert "缺少必需结果：stock_technical_result" in result["missing_items"]
+    assert result["retry_tasks"] == []
+
+
+def test_market_coverage_gap_retries_stock_data_analysis_node():
+    state = {
+        "task_type": "technical",
+        "required_outputs": [
+            "stock_market_data_analysis",
+            "stock_technical_result",
+        ],
+        "stock_market_data_analysis": {
+            "data_coverage": {"coverage_ratio": 0.2}
+        },
+        "stock_technical_result": {"trend": "up"},
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+
+    result = review_agent.run(state, DEPS)["review_result"]
+
+    assert result["retry_tasks"] == [
+        {
+            "node": "stock_data_analysis",
+            "result_key": "stock_market_data_analysis",
+            "reason": "个股市场数据覆盖率低于 0.8",
+        }
+    ]
+
+
+def test_industry_coverage_gap_retries_upstream_capex_node():
+    required_outputs = [
+        "industry_report_result",
+        "upstream_capex_result",
+        "policy_result",
+        "future_capex_forecast_result",
+        "industry_valuation_result",
+    ]
+    state = {
+        "task_type": "industry",
+        "required_outputs": required_outputs,
+        **{key: {"status": "completed"} for key in required_outputs},
+        "upstream_capex_result": {
+            "status": "completed",
+            "company_coverage": {"coverage_ratio": 0.2},
+        },
+        "evidence_refs": [{}, {}, {}],
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+
+    result = review_agent.run(state, DEPS)["review_result"]
+
+    assert result["retry_tasks"] == [
+        {
+            "node": "upstream_capex",
+            "result_key": "upstream_capex_result",
+            "reason": "行业公司覆盖率低于 0.6",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("task_type", "skipped_node", "state"),
+    [
+        (
+            "technical",
+            "stock_data_analysis",
+            {
+                "required_outputs": [
+                    "stock_market_data_analysis",
+                    "stock_technical_result",
+                ],
+                "stock_market_data_analysis": {
+                    "data_coverage": {"coverage_ratio": 0.2}
+                },
+                "stock_technical_result": {"trend": "up"},
+            },
+        ),
+        (
+            "industry",
+            "upstream_capex",
+            {
+                "required_outputs": [
+                    "industry_report_result",
+                    "upstream_capex_result",
+                    "policy_result",
+                    "future_capex_forecast_result",
+                    "industry_valuation_result",
+                ],
+                "industry_report_result": {"status": "completed"},
+                "upstream_capex_result": {
+                    "company_coverage": {"coverage_ratio": 0.2}
+                },
+                "policy_result": {"status": "completed"},
+                "future_capex_forecast_result": {"status": "completed"},
+                "industry_valuation_result": {"status": "completed"},
+                "evidence_refs": [{}, {}, {}],
+            },
+        ),
+    ],
+)
+def test_coverage_gap_still_fails_but_does_not_retry_skipped_node(
+    task_type, skipped_node, state
+):
+    result = review_agent.run(
+        {
+            "task_type": task_type,
+            "skipped_nodes": [skipped_node],
+            "retry_count": 0,
+            "max_retries": 1,
+            **state,
+        },
+        DEPS,
+    )["review_result"]
+
+    assert result["needs_retry"] is True
+    assert result["retry_tasks"] == []
+
+
+def test_partial_logic_score_does_not_read_full_decision_result():
+    state = {
+        "task_type": "technical",
+        "required_outputs": [
+            "stock_market_data_analysis",
+            "stock_technical_result",
+        ],
+        "stock_market_data_analysis": {
+            "data_coverage": {"coverage_ratio": 1.0}
+        },
+        "stock_technical_result": {"trend": "up"},
+    }
+
+    without_decision = review_agent.run(state, DEPS)["review_result"]["logic_score"]
+    with_decision = review_agent.run(
+        {**state, "decision_result": {"conflict_points": []}}, DEPS
+    )["review_result"]["logic_score"]
+
+    assert with_decision == without_decision
+
+
+def test_unknown_required_output_fails_with_safe_string_retry():
+    state = {
+        "task_type": "technical",
+        "required_outputs": [
+            "stock_market_data_analysis",
+            "stock_technical_result",
+            "custom_result",
+        ],
+        "stock_market_data_analysis": {
+            "data_coverage": {"coverage_ratio": 1.0}
+        },
+        "stock_technical_result": {"trend": "up"},
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+
+    result = review_agent.run(state, DEPS)["review_result"]
+
+    assert result["needs_retry"] is True
+    assert "缺少必需结果：custom_result" in result["missing_items"]
+    assert result["retry_tasks"] == ["补采：缺少必需结果：custom_result"]

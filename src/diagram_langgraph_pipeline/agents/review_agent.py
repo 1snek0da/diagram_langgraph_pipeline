@@ -49,12 +49,9 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
         for node, status in state.get("optional_node_statuses", {}).items()
         if status.get("status") == "skipped"
     )
-    effective_required_outputs = tuple(
-        key for key in required_outputs if RESULT_NODES.get(key) not in skipped_nodes
-    )
-    missing = _scoped_missing_items(state, effective_required_outputs, skipped_nodes)
+    missing = _scoped_missing_items(state, required_outputs, skipped_nodes)
     missing_required: list[str] = []
-    for key in effective_required_outputs:
+    for key in required_outputs:
         if not state.get(key):
             missing_required.append(key)
             missing.append(f"缺少必需结果：{key}")
@@ -75,18 +72,27 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     )
     market_coverage_required = task_type in {"full", "technical"}
     industry_coverage_required = task_type in {"full", "industry"}
+    coverage_gaps: list[tuple[str, str]] = []
     if market_coverage_required and coverage < 0.8:
-        missing.append("个股市场数据覆盖率低于 0.8")
+        coverage_gaps.append(
+            ("stock_market_data_analysis", "个股市场数据覆盖率低于 0.8")
+        )
     if industry_coverage_required and industry_coverage < 0.6:
-        missing.append("行业公司覆盖率低于 0.6")
+        coverage_gaps.append(
+            ("upstream_capex_result", "行业公司覆盖率低于 0.6")
+        )
+    missing.extend(message for _, message in coverage_gaps)
 
     completeness = max(0.0, 1.0 - len(set(missing)) * 0.08)
     evidence_score = min(1.0, len(state.get("evidence_refs", [])) / 6)
-    logic_score = (
-        0.9
-        if state.get("decision_result", {}).get("conflict_points") is not None
-        else 0.5
-    )
+    if task_type == "full":
+        logic_score = (
+            0.9
+            if state.get("decision_result", {}).get("conflict_points") is not None
+            else 0.5
+        )
+    else:
+        logic_score = 0.7
     retry_count = int(state.get("retry_count", 0))
     max_retries = int(state.get("max_retries", 2))
     has_required_results = not missing_required
@@ -111,18 +117,29 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     needs_retry = not passed and retry_count < max_retries
     next_retry_count = retry_count + 1 if needs_retry else retry_count
     unique_missing = list(dict.fromkeys(missing))
-    retry_tasks: list[str | dict[str, Any]] = [
-        {
-            "node": RESULT_NODES[key],
-            "result_key": key,
-            "reason": f"缺少必需结果：{key}",
-        }
-        for key in missing_required
-        if RESULT_NODES.get(key) not in skipped_nodes
-    ]
-    required_messages = {f"缺少必需结果：{key}" for key in missing_required}
+    retry_tasks: list[str | dict[str, Any]] = []
+    handled_messages: set[str] = set()
+    for key in missing_required:
+        reason = f"缺少必需结果：{key}"
+        handled_messages.add(reason)
+        node = RESULT_NODES.get(key)
+        if node is None:
+            retry_tasks.append(f"补采：{reason}")
+        elif node not in skipped_nodes:
+            retry_tasks.append(
+                {"node": node, "result_key": key, "reason": reason}
+            )
+    for result_key, reason in coverage_gaps:
+        handled_messages.add(reason)
+        node = RESULT_NODES[result_key]
+        if node not in skipped_nodes:
+            retry_tasks.append(
+                {"node": node, "result_key": result_key, "reason": reason}
+            )
     retry_tasks.extend(
-        f"补采：{item}" for item in unique_missing if item not in required_messages
+        f"补采：{item}"
+        for item in unique_missing
+        if item not in handled_messages
     )
     return {
         "retry_count": next_retry_count,

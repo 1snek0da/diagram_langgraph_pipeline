@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from ..dependencies import AgentDependencies
+from ..routing import get_execution_plan
 
 
 def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
@@ -185,7 +186,10 @@ def _partial_review_sections(state: dict[str, Any], start: int) -> list[str]:
     return [
         _section(
             f"{start}. 主要风险与失效条件",
-            {"risks": state.get("risk_points", [])},
+            {
+                "risks": state.get("risk_points", []),
+                "invalid_conditions": _partial_invalid_conditions(state),
+            },
         ),
         _section(
             f"{start + 1}. 证据引用与数据缺口",
@@ -200,35 +204,45 @@ def _partial_review_sections(state: dict[str, Any], start: int) -> list[str]:
     ]
 
 
-TASK_RESULT_KEYS = {
-    "industry": (
-        "industry_report_result",
-        "upstream_capex_result",
-        "policy_result",
-        "future_capex_forecast_result",
-        "industry_valuation_result",
-    ),
-    "fundamental": (
-        "business_result",
-        "profit_forecast_result",
-        "marginal_change_result",
-        "company_valuation_result",
-    ),
-    "technical": ("stock_market_data_analysis", "stock_technical_result"),
-    "market": (
-        "index_analysis_result",
-        "sector_technical_result",
-        "sentiment_result",
-    ),
-}
-
-
 def _selected_results(state: dict[str, Any], task_type: str) -> dict[str, Any]:
     joined = state.get("joined_research_result", {}).get("selected_results")
-    if joined is not None:
-        return joined
-    result_keys = state.get("result_keys", TASK_RESULT_KEYS.get(task_type, ()))
-    return {key: state.get(key, {}) for key in result_keys}
+    plan = get_execution_plan(task_type)
+    if joined is None:
+        result_keys = state.get("result_keys", plan.result_keys)
+        joined = {key: state.get(key, {}) for key in result_keys}
+    optional_nodes = set(state.get("optional_nodes", getattr(plan, "optional_nodes", ())))
+    skipped_optional_nodes = {
+        node
+        for node, status in state.get("optional_node_statuses", {}).items()
+        if status.get("status") == "skipped"
+    }
+    return {
+        key: result
+        for key, result in joined.items()
+        if not (
+            key.removesuffix("_result") in skipped_optional_nodes
+            or (
+                key.removesuffix("_result") in optional_nodes
+                and result.get("status") == "skipped"
+            )
+        )
+    }
+
+
+def _partial_invalid_conditions(state: dict[str, Any]) -> list[str]:
+    conditions: list[str] = []
+    for result in _selected_results(state, state.get("task_type", "full")).values():
+        for field in ("invalid_condition", "invalid_conditions"):
+            value = result.get(field)
+            if isinstance(value, str) and value:
+                conditions.append(value)
+            elif isinstance(value, list):
+                conditions.extend(str(item) for item in value if item)
+    if not conditions:
+        conditions.append(
+            "核心数据、假设或适用市场状态发生重大变化时，本任务结论失效"
+        )
+    return list(dict.fromkeys(conditions))
 
 
 SECTION_BUILDERS = {
@@ -308,6 +322,7 @@ LABELS = {
     "conflict_points": "冲突说明",
     "risk_points": "风险点",
     "invalid_condition": "失效条件",
+    "invalid_conditions": "失效条件",
     "summary": "摘要",
     "trend": "趋势",
     "trend_view": "趋势判断",

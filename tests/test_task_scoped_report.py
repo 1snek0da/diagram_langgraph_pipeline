@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from diagram_langgraph_pipeline.agents import report_agent, research_join_agent
@@ -64,6 +66,10 @@ def test_research_join_ignores_gaps_from_a_skipped_optional_result():
 
     assert result["missing_items"] == []
     assert result["evidence_refs"] == [{"claim_text": "business"}]
+    assert (
+        "marginal_change_result"
+        not in result["joined_research_result"]["selected_results"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -157,5 +163,84 @@ def test_partial_report_discloses_scope_and_renders_only_task_sections(
     assert "**决策倾向**：buy" not in markdown
     assert markdown.index("任务执行范围") < markdown.index(present[0])
     assert "主要风险与失效条件" in markdown
+    assert "核心数据、假设或适用市场状态发生重大变化时，本任务结论失效" in markdown
     assert "证据引用与数据缺口" in markdown
     assert "Reflection 校验结果" in markdown
+
+
+def test_partial_report_uses_selected_result_invalid_conditions():
+    state = {
+        "run_id": "run-technical-invalid-condition",
+        "task_type": "technical",
+        "ticker": "AAPL",
+        "as_of_date": "2026-08-05",
+        "result_keys": ["stock_market_data_analysis", "stock_technical_result"],
+        "conclusion_scope": "仅个股技术面，不给出完整买卖结论",
+        "stock_market_data_analysis": {"summary": "technical"},
+        "stock_technical_result": {
+            "trend": "up",
+            "invalid_condition": "跌破长期趋势支撑",
+        },
+    }
+
+    markdown = report_agent.run(state, DEPS)["final_markdown"]
+    risk_section = markdown.split("## 4. 主要风险与失效条件", 1)[1].split(
+        "## 5. 证据引用与数据缺口", 1
+    )[0]
+
+    assert "跌破长期趋势支撑" in risk_section
+
+
+def test_partial_report_fallback_uses_authoritative_routing_result_keys(monkeypatch):
+    monkeypatch.setattr(
+        report_agent,
+        "get_execution_plan",
+        lambda task_type: SimpleNamespace(result_keys=("custom_result",)),
+        raising=False,
+    )
+    state = {
+        "run_id": "run-routing-fallback",
+        "task_type": "technical",
+        "ticker": "AAPL",
+        "as_of_date": "2026-08-05",
+        "conclusion_scope": "仅个股技术面，不给出完整买卖结论",
+        "custom_result": {"summary": "AUTHORITATIVE_PLAN_RESULT"},
+    }
+
+    markdown = report_agent.run(state, DEPS)["final_markdown"]
+
+    assert "AUTHORITATIVE_PLAN_RESULT" in markdown
+
+
+def test_fundamental_conclusion_excludes_skipped_optional_business_result():
+    state = {
+        "run_id": "run-fundamental-skip",
+        "task_type": "fundamental",
+        "ticker": "AAPL",
+        "as_of_date": "2026-08-05",
+        "result_keys": [
+            "business_result",
+            "profit_forecast_result",
+            "marginal_change_result",
+            "company_valuation_result",
+        ],
+        "conclusion_scope": "仅个股基本面与估值，不给出完整买卖结论",
+        "business_result": {"summary": "business"},
+        "profit_forecast_result": {"summary": "forecast"},
+        "marginal_change_result": {
+            "status": "skipped",
+            "summary": "SKIPPED_OPTIONAL_RESULT",
+        },
+        "company_valuation_result": {"summary": "valuation"},
+        "optional_node_statuses": {
+            "marginal_change": {"status": "skipped", "reason": "no trusted source"}
+        },
+    }
+
+    markdown = report_agent.run(state, DEPS)["final_markdown"]
+    conclusion = markdown.split("## 1. 基本面与估值结论", 1)[1].split(
+        "## 2. 公司业务与行业增长匹配度", 1
+    )[0]
+
+    assert "SKIPPED_OPTIONAL_RESULT" not in conclusion
+    assert "no trusted source" in markdown

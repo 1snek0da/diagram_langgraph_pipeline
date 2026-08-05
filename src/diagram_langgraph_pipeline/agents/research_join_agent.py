@@ -12,19 +12,27 @@ OPTIONAL_RESULT_NODES = {"marginal_change_result": "marginal_change"}
 
 def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     result_keys = tuple(state.get("result_keys", ()))
-    selected_results = {key: state.get(key, {}) for key in result_keys}
     skipped_optional_nodes = {
         node
         for node, status in state.get("optional_node_statuses", {}).items()
         if status.get("status") == "skipped"
+    }
+    selected_results = {
+        key: state.get(key, {})
+        for key in result_keys
+        if not (
+            OPTIONAL_RESULT_NODES.get(key) in skipped_optional_nodes
+            or (
+                OPTIONAL_RESULT_NODES.get(key) is not None
+                and state.get(key, {}).get("status") == "skipped"
+            )
+        )
     }
 
     evidence: list[dict[str, Any]] = []
     research_missing: list[str] = []
     risks: list[str] = []
     for key, result in selected_results.items():
-        if OPTIONAL_RESULT_NODES.get(key) in skipped_optional_nodes:
-            continue
         evidence.extend(result.get("evidence", []))
         research_missing.extend(result.get("missing_items", []))
         research_missing.extend(result.get("coverage", {}).get("missing_items", []))
