@@ -1,11 +1,15 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from diagram_langgraph_pipeline import cli
+from diagram_langgraph_pipeline import service
+from diagram_langgraph_pipeline.contracts import RunEvent
+from diagram_langgraph_pipeline.routing import TaskType, get_execution_plan
 from diagram_langgraph_pipeline.service import infer_comparisons
-from diagram_langgraph_pipeline.service import result_summary
+from diagram_langgraph_pipeline.service import RunOptions, result_summary, validate_options
 
 
 runner = CliRunner()
@@ -54,6 +58,151 @@ def test_json_mode_emits_one_structured_document(monkeypatch, tmp_path: Path):
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["run_id"] == "run-1"
+
+
+def test_run_accepts_explicit_task(monkeypatch, tmp_path: Path):
+    captured = {}
+    monkeypatch.setattr(cli, "load_settings", lambda: {})
+    monkeypatch.setattr(cli, "paid_provider_names", lambda settings: [])
+
+    def fake_run(options, settings, event_callback=None):
+        captured["options"] = options
+        return {}, {
+            "run_id": "run-1",
+            "ticker": "AAPL",
+            "task_type": "technical",
+            "coverage": {},
+            "provider_calls": {},
+            "d4f_token_usage": {},
+            "decision": {},
+            "review": {},
+            "report_path": str(tmp_path / "report.md"),
+            "enabled_nodes": [],
+            "skipped_nodes": [],
+            "completed_nodes": [],
+            "failed_nodes": [],
+            "conclusion_scope": "仅个股技术面，不给出完整买卖结论",
+        }
+
+    monkeypatch.setattr(cli, "run_analysis", fake_run)
+    result = runner.invoke(
+        cli.app, ["run", "AAPL", "--task", "technical", "--json", "--no-llm"]
+    )
+
+    assert result.exit_code == 0
+    assert captured["options"].task_type is TaskType.TECHNICAL
+
+
+def test_market_task_does_not_require_ticker():
+    validate_options(RunOptions(ticker=None, task_type=TaskType.MARKET))
+
+
+@pytest.mark.parametrize("task_type", [TaskType.FULL, TaskType.FUNDAMENTAL, TaskType.TECHNICAL])
+def test_stock_tasks_require_ticker(task_type):
+    with pytest.raises(Exception, match="Ticker"):
+        validate_options(RunOptions(ticker=None, task_type=task_type))
+
+
+def test_industry_task_requires_industry_name():
+    with pytest.raises(Exception, match="行业名称"):
+        validate_options(RunOptions(ticker=None, task_type=TaskType.INDUSTRY))
+
+
+def test_plan_preview_lists_scope_and_skipped_count(monkeypatch):
+    messages = []
+    monkeypatch.setattr(
+        cli,
+        "stdout",
+        type("Console", (), {"print": lambda self, value: messages.append(str(value))})(),
+    )
+
+    plan = get_execution_plan("technical")
+    cli._print_task_plan(plan)
+
+    rendered = "\n".join(messages)
+    assert "technical" in rendered
+    assert plan.conclusion_scope in rendered
+    assert str(len(plan.skipped_nodes)) in rendered
+
+
+def test_task_progress_printer_counts_terminal_node_events(monkeypatch):
+    messages = []
+    monkeypatch.setattr(
+        cli,
+        "stderr",
+        type("Console", (), {"print": lambda self, value: messages.append(str(value))})(),
+    )
+    progress = cli._TaskProgressPrinter(get_execution_plan("technical"))
+
+    progress(RunEvent("node", "planner", "started", "开始"))
+    progress(RunEvent("node", "planner", "completed", "完成"))
+    progress(RunEvent("node", "stock_data_fetch", "degraded", "缓存数据不完整"))
+
+    assert any("1/" in message and "planner" in message for message in messages)
+    assert any("2/" in message and "缓存数据不完整" in message for message in messages)
+
+
+def test_market_service_skips_security_lookup_and_target_prefetch(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeRepository:
+        def __init__(self, dsn):
+            captured["dsn"] = dsn
+
+        def check_health(self):
+            return {"cache_schema_ready": True}
+
+        def load_security(self, ticker):
+            raise AssertionError("market task must not load target security")
+
+        def save_final_report(self, run_id, markdown):
+            pass
+
+        def update_report_path(self, run_id, path):
+            pass
+
+    class FakeMarketProvider:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def fetch(self, ticker, start, end):
+            raise AssertionError("market task must not prefetch a target ticker")
+
+    def fake_run_research(initial_state, deps):
+        captured["initial_state"] = initial_state
+        return {
+            **initial_state,
+            "run_id": "run-1",
+            "final_markdown": "# report",
+            "completed_nodes": [],
+            "failed_nodes": [],
+        }
+
+    monkeypatch.setattr(service, "PostgresAnalysisRepository", FakeRepository)
+    monkeypatch.setattr(service, "DatabaseFirstMarketDataProvider", FakeMarketProvider)
+    monkeypatch.setattr(service, "build_research_provider", lambda *args, **kwargs: object())
+    monkeypatch.setattr(service, "build_optional_llm_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "run_research", fake_run_research)
+
+    _, summary = service.run_analysis(
+        RunOptions(
+            ticker=None,
+            task_type=TaskType.MARKET,
+            benchmark="^GSPC",
+            sector_index="XLK",
+            llm=False,
+            output=tmp_path / "market.md",
+        ),
+        {"DATABASE_URL": "postgresql://example"},
+    )
+
+    initial = captured["initial_state"]
+    assert initial["task_type"] == "market"
+    assert initial["ticker"] == ""
+    assert initial["company_name"] == ""
+    assert initial["benchmark_ticker"] == "^GSPC"
+    assert initial["sector_index_ticker"] == "XLK"
+    assert summary["coverage"]["daily_bars"] == 0
 
 
 def test_noninteractive_paid_provider_requires_explicit_authorization(monkeypatch):
@@ -111,6 +260,61 @@ def test_result_summary_exposes_total_and_per_node_token_usage(tmp_path):
     assert usage["cached_tokens"] == 20
     assert usage["total_tokens"] == 150
     assert usage["nodes"]["planner"]["estimated_prompt_tokens"] == 100
+
+
+def test_result_summary_exposes_task_plan_progress(tmp_path):
+    summary = result_summary(
+        {
+            "run_id": "run-1",
+            "ticker": "AAPL",
+            "task_type": "technical",
+            "required_nodes": ["stock_data_analysis", "stock_technical"],
+            "support_nodes": ["planner", "stock_data_fetch"],
+            "optional_nodes": [],
+            "skipped_nodes": ["decision"],
+            "completed_nodes": ["planner", "stock_data_fetch"],
+            "failed_nodes": [],
+            "conclusion_scope": "仅个股技术面，不给出完整买卖结论",
+        },
+        {},
+        tmp_path / "report.md",
+    )
+
+    assert summary["task_type"] == "technical"
+    assert summary["enabled_nodes"] == [
+        "stock_data_analysis",
+        "stock_technical",
+        "planner",
+        "stock_data_fetch",
+    ]
+    assert summary["skipped_nodes"] == ["decision"]
+    assert summary["completed_nodes"] == ["planner", "stock_data_fetch"]
+    assert summary["failed_nodes"] == []
+    assert summary["conclusion_scope"] == "仅个股技术面，不给出完整买卖结论"
+
+
+def test_partial_summary_uses_conclusion_scope_instead_of_unknown_decision(monkeypatch):
+    messages = []
+    monkeypatch.setattr(
+        cli,
+        "stdout",
+        type("Console", (), {"print": lambda self, value: messages.append(str(value))})(),
+    )
+
+    cli._print_summary(
+        {
+            "run_id": "run-1",
+            "ticker": "AAPL",
+            "task_type": "technical",
+            "decision": {},
+            "review": {"passed": True},
+            "conclusion_scope": "仅个股技术面，不给出完整买卖结论",
+        }
+    )
+
+    rendered = "\n".join(messages)
+    assert "decision=unknown" not in rendered
+    assert "仅个股技术面" in rendered
 
 
 def test_token_usage_check_explains_disabled_d4f(monkeypatch):
