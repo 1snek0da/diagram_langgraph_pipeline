@@ -9,16 +9,54 @@ from ..dependencies import AgentDependencies
 
 
 def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
-    decision = state.get("decision_result", {})
+    task_type = state.get("task_type", "full")
     advisory = (
         {"status": "disabled"}
-        if state.get("llm_scope") == "all_nodes"
+        if state.get("llm_scope") == "all_nodes" or task_type != "full"
         else _generate_llm_advisory(state, deps)
     )
-    conclusion = dict(decision)
-    if advisory["status"] != "disabled":
-        conclusion["llm_advisory"] = advisory
-    sections = [
+    if task_type == "full":
+        conclusion = dict(state.get("decision_result", {}))
+        if advisory["status"] != "disabled":
+            conclusion["llm_advisory"] = advisory
+    else:
+        conclusion = {
+            "conclusion_scope": state.get("conclusion_scope"),
+            "selected_results": _selected_results(state, task_type),
+        }
+
+    scope_section = _section(
+        "任务执行范围",
+        {
+            "task_type": task_type,
+            "required_nodes": state.get("required_nodes", []),
+            "support_nodes": state.get("support_nodes", []),
+            "optional_nodes": state.get("optional_nodes", []),
+            "skipped_nodes": state.get("skipped_nodes", []),
+            "completed_nodes": state.get("completed_nodes", []),
+            "failed_nodes": state.get("failed_nodes", []),
+            "optional_node_statuses": state.get("optional_node_statuses", {}),
+            "conclusion_scope": state.get("conclusion_scope", "完整综合研究"),
+        },
+    )
+    section_builder = SECTION_BUILDERS.get(task_type, _full_sections)
+    sections = [scope_section, *section_builder(state, conclusion)]
+    title = f"# {state.get('company_name') or state.get('ticker')} 股票研究报告"
+    metadata = (
+        f"- 股票代码：{state.get('ticker')}\n"
+        f"- 行业：{state.get('industry_name')}\n"
+        f"- 分析日期：{state.get('as_of_date')}\n"
+        f"- 投资周期：{state.get('investment_horizon', 'medium')}\n"
+        "- 声明：本报告仅用于研究辅助，不构成投资建议。"
+    )
+    markdown = "\n\n".join([title, metadata, *sections]) + "\n"
+    deps.repository.save_final_report(str(state.get("run_id", "")), markdown)
+    return {"final_markdown": markdown, "llm_advisory_result": advisory}
+
+
+def _full_sections(state: dict[str, Any], conclusion: dict[str, Any]) -> list[str]:
+    decision = state.get("decision_result", {})
+    return [
         _section("1. 结论摘要", conclusion),
         _section("2. 行业分析", state.get("industry_report_result", {})),
         _section(
@@ -71,17 +109,135 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
         ),
         _section("15. Reflection 校验结果", state.get("review_result", {})),
     ]
-    title = f"# {state.get('company_name') or state.get('ticker')} 股票研究报告"
-    metadata = (
-        f"- 股票代码：{state.get('ticker')}\n"
-        f"- 行业：{state.get('industry_name')}\n"
-        f"- 分析日期：{state.get('as_of_date')}\n"
-        f"- 投资周期：{state.get('investment_horizon', 'medium')}\n"
-        "- 声明：本报告仅用于研究辅助，不构成投资建议。"
-    )
-    markdown = "\n\n".join([title, metadata, *sections]) + "\n"
-    deps.repository.save_final_report(str(state.get("run_id", "")), markdown)
-    return {"final_markdown": markdown, "llm_advisory_result": advisory}
+
+
+def _industry_sections(
+    state: dict[str, Any], conclusion: dict[str, Any]
+) -> list[str]:
+    return [
+        _section("1. 行业研究结论", conclusion),
+        _section("2. 行业分析", state.get("industry_report_result", {})),
+        _section(
+            "3. 上游资本开支与政策影响",
+            {
+                "capex": state.get("upstream_capex_result", {}),
+                "policy": state.get("policy_result", {}),
+            },
+        ),
+        _section(
+            "4. 未来资本开支预测与行业价值测算",
+            {
+                "future_capex_forecast": state.get(
+                    "future_capex_forecast_result", {}
+                ),
+                "industry_valuation": state.get("industry_valuation_result", {}),
+            },
+        ),
+        *_partial_review_sections(state, 5),
+    ]
+
+
+def _fundamental_sections(
+    state: dict[str, Any], conclusion: dict[str, Any]
+) -> list[str]:
+    return [
+        _section("1. 基本面与估值结论", conclusion),
+        _section("2. 公司业务与行业增长匹配度", state.get("business_result", {})),
+        _section(
+            "3. 盈利预测与估值测算",
+            {
+                "forecast": state.get("profit_forecast_result", {}),
+                "valuation": state.get("company_valuation_result", {}),
+            },
+        ),
+        _section("4. 边际变化分析", state.get("marginal_change_result", {})),
+        *_partial_review_sections(state, 5),
+    ]
+
+
+def _technical_sections(
+    state: dict[str, Any], conclusion: dict[str, Any]
+) -> list[str]:
+    return [
+        _section("1. 技术面结论", conclusion),
+        _section("2. 个股股市数据分析", state.get("stock_market_data_analysis", {})),
+        _section("3. 个股技术形态分析", state.get("stock_technical_result", {})),
+        *_partial_review_sections(state, 4),
+    ]
+
+
+def _market_sections(state: dict[str, Any], conclusion: dict[str, Any]) -> list[str]:
+    return [
+        _section("1. 市场环境结论", conclusion),
+        _section(
+            "2. 大盘与板块环境",
+            {
+                "index": state.get("index_analysis_result", {}),
+                "sector": state.get("sector_technical_result", {}),
+            },
+        ),
+        _section("3. 市场情绪分析", state.get("sentiment_result", {})),
+        *_partial_review_sections(state, 4),
+    ]
+
+
+def _partial_review_sections(state: dict[str, Any], start: int) -> list[str]:
+    return [
+        _section(
+            f"{start}. 主要风险与失效条件",
+            {"risks": state.get("risk_points", [])},
+        ),
+        _section(
+            f"{start + 1}. 证据引用与数据缺口",
+            {
+                "evidence": state.get("evidence_refs", []),
+                "missing_items": state.get("missing_items", []),
+            },
+        ),
+        _section(
+            f"{start + 2}. Reflection 校验结果", state.get("review_result", {})
+        ),
+    ]
+
+
+TASK_RESULT_KEYS = {
+    "industry": (
+        "industry_report_result",
+        "upstream_capex_result",
+        "policy_result",
+        "future_capex_forecast_result",
+        "industry_valuation_result",
+    ),
+    "fundamental": (
+        "business_result",
+        "profit_forecast_result",
+        "marginal_change_result",
+        "company_valuation_result",
+    ),
+    "technical": ("stock_market_data_analysis", "stock_technical_result"),
+    "market": (
+        "index_analysis_result",
+        "sector_technical_result",
+        "sentiment_result",
+    ),
+}
+
+
+def _selected_results(state: dict[str, Any], task_type: str) -> dict[str, Any]:
+    joined = state.get("joined_research_result", {}).get("selected_results")
+    if joined is not None:
+        return joined
+    result_keys = state.get("result_keys", TASK_RESULT_KEYS.get(task_type, ()))
+    return {key: state.get(key, {}) for key in result_keys}
+
+
+SECTION_BUILDERS = {
+    "full": _full_sections,
+    "industry": _industry_sections,
+    "fundamental": _fundamental_sections,
+    "technical": _technical_sections,
+    "market": _market_sections,
+}
 
 
 def _generate_llm_advisory(
