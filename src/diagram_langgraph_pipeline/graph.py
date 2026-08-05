@@ -126,7 +126,12 @@ def _instrument(
         )
         try:
             output = function(state, deps)
-            advisory = llm_orchestrator.analyze(name, state, output)
+            optional_status = output.get("optional_node_statuses", {}).get(name, {})
+            skipped = optional_status.get("status") == "skipped"
+            runtime_status = "degraded" if skipped else "completed"
+            advisory = None
+            if not skipped:
+                advisory = llm_orchestrator.analyze(name, state, output)
             if advisory is not None:
                 output = dict(output)
                 output["llm_node_results"] = {name: advisory}
@@ -140,12 +145,17 @@ def _instrument(
                     )
                     deps.repository.save_final_report(run_id, output["final_markdown"])
             output = {**output, "completed_nodes": [name]}
-            deps.repository.record_node_run(run_id, name, "completed", dict(state), output)
+            deps.repository.record_node_run(
+                run_id, name, runtime_status, dict(state), output
+            )
             deps.events.emit(
                 RunEvent(
                     event_type="node",
                     stage=name,
-                    status="completed",
+                    status=runtime_status,
+                    metadata=(
+                        {"reason": optional_status.get("reason")} if skipped else {}
+                    ),
                     message=f"节点 {name} 完成",
                 )
             )
