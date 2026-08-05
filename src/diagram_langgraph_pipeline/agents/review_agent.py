@@ -141,6 +141,8 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
         for item in unique_missing
         if item not in handled_messages
     )
+    if not needs_retry:
+        retry_tasks = []
     return {
         "retry_count": next_retry_count,
         "missing_items": unique_missing,
@@ -169,8 +171,19 @@ def _scoped_missing_items(
 ) -> list[str]:
     required = set(required_outputs)
     legacy_messages = {message: key for key, message in REQUIRED_RESULTS.items()}
+    skipped_result_missing = {
+        item
+        for result_key, node in RESULT_NODES.items()
+        if node in skipped_nodes
+        for item in [
+            *state.get(result_key, {}).get("missing_items", []),
+            *state.get(result_key, {}).get("coverage", {}).get("missing_items", []),
+        ]
+    }
     scoped: list[str] = []
     for item in state.get("missing_items", []):
+        if item in skipped_result_missing:
+            continue
         result_key = legacy_messages.get(item)
         if item.startswith("缺少必需结果："):
             result_key = item.removeprefix("缺少必需结果：")

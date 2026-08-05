@@ -362,3 +362,82 @@ def test_unknown_required_output_fails_with_safe_string_retry():
     assert result["needs_retry"] is True
     assert "缺少必需结果：custom_result" in result["missing_items"]
     assert result["retry_tasks"] == ["补采：缺少必需结果：custom_result"]
+
+
+def test_skipped_optional_result_stale_gaps_are_removed_from_review():
+    stale_gaps = ["no trusted marginal event", "marginal source coverage gap"]
+    state = {
+        "task_type": "fundamental",
+        "required_outputs": [
+            "business_result",
+            "profit_forecast_result",
+            "company_valuation_result",
+        ],
+        "business_result": {"summary": "business"},
+        "profit_forecast_result": {"summary": "forecast"},
+        "company_valuation_result": {"summary": "valuation"},
+        "marginal_change_result": {
+            "status": "skipped",
+            "missing_items": [stale_gaps[0]],
+            "coverage": {"missing_items": [stale_gaps[1]]},
+        },
+        "optional_node_statuses": {
+            "marginal_change": {"status": "skipped", "reason": "no trusted source"}
+        },
+        "missing_items": stale_gaps,
+        "evidence_refs": [{}, {}, {}],
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+
+    result = review_agent.run(state, DEPS)["review_result"]
+
+    assert result["passed"] is True
+    assert all(item not in result["missing_items"] for item in stale_gaps)
+    assert result["retry_tasks"] == []
+
+
+def test_passed_review_has_no_retry_tasks_for_non_blocking_gap():
+    state = {
+        "task_type": "fundamental",
+        "required_outputs": [
+            "business_result",
+            "profit_forecast_result",
+            "company_valuation_result",
+        ],
+        "business_result": {"summary": "business"},
+        "profit_forecast_result": {"summary": "forecast"},
+        "company_valuation_result": {"summary": "valuation"},
+        "missing_items": ["non-blocking task-scoped gap"],
+        "evidence_refs": [{}, {}, {}],
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+
+    result = review_agent.run(state, DEPS)["review_result"]
+
+    assert result["passed"] is True
+    assert result["needs_retry"] is False
+    assert result["retry_tasks"] == []
+
+
+def test_retry_exhausted_review_has_no_retry_tasks():
+    state = {
+        "task_type": "technical",
+        "required_outputs": [
+            "stock_market_data_analysis",
+            "stock_technical_result",
+        ],
+        "stock_market_data_analysis": {
+            "data_coverage": {"coverage_ratio": 0.2}
+        },
+        "stock_technical_result": {"trend": "up"},
+        "retry_count": 1,
+        "max_retries": 1,
+    }
+
+    result = review_agent.run(state, DEPS)["review_result"]
+
+    assert result["needs_retry"] is False
+    assert result["retry_exhausted"] is True
+    assert result["retry_tasks"] == []
