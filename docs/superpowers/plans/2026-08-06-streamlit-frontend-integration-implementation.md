@@ -1160,6 +1160,21 @@ def test_fastapi_app_factory_imports():
 def test_streamlit_entrypoint_imports_without_starting_server():
     import streamlit_app
     assert callable(streamlit_app.main)
+
+
+def test_launch_scripts_target_the_api_and_streamlit_entrypoints():
+    api_script = Path("scripts/start_api.ps1").read_text(encoding="utf-8")
+    ui_script = Path("scripts/start_streamlit.ps1").read_text(encoding="utf-8")
+    assert "diagram_langgraph_pipeline.api.app:create_app" in api_script
+    assert "--factory" in api_script
+    assert "streamlit run streamlit_app.py" in ui_script
+
+
+def test_env_example_lists_web_runtime_settings():
+    text = Path(".env.example").read_text(encoding="utf-8")
+    assert "DLP_API_BASE_URL=" in text
+    assert "DLP_API_MAX_WORKERS=1" in text
+    assert "DLP_CORS_ORIGINS=" in text
 ```
 
 - [ ] **Step 2: Write five-mode API end-to-end tests**
@@ -1194,7 +1209,7 @@ $env:PYTHONPATH = "$PWD\src"
 D:\diagram_langgraph_pipeline\.venv\Scripts\python.exe -m pytest tests/api/test_startup.py tests/test_web_end_to_end.py -q --basetemp "$env:TEMP\dlp-web-task10-red"
 ```
 
-Expected: FAIL because scripts/documented startup configuration and the deterministic app fixture are incomplete.
+Expected: FAIL with `FileNotFoundError` for the two launch scripts and missing `DLP_` settings.
 
 - [ ] **Step 4: Add launch scripts**
 
