@@ -112,6 +112,60 @@ def test_industry_and_market_accept_ticker_without_industry_name():
     validate_options(RunOptions(ticker="AAPL", task_type=TaskType.MARKET))
 
 
+def test_wizard_industry_name_can_be_left_blank_for_metadata(monkeypatch):
+    prompts = []
+    captured = {}
+
+    def fake_prompt(label, *args, **kwargs):
+        prompts.append((label, kwargs))
+        if "研究任务" in label:
+            return "industry"
+        if label == "Ticker":
+            return "MSFT"
+        if "行业名称" in label:
+            return ""
+        if "截止日" in label:
+            return "2026-08-06"
+        if "报告交易日" in label:
+            return 70
+        if "投资期限" in label:
+            return "medium"
+        if "下一步" in label:
+            return "exit"
+        raise AssertionError(f"unexpected prompt: {label}")
+
+    confirmations = iter([False, True])
+
+    def fake_confirm(label, *args, **kwargs):
+        return next(confirmations)
+
+    def fake_run(options, settings, event_callback=None):
+        captured["options"] = options
+        return {"final_markdown": "# report"}, {
+            "run_id": "run-1",
+            "ticker": "MSFT",
+            "task_type": "industry",
+            "decision": {},
+            "review": {},
+            "d4f_token_usage": {},
+            "report_path": "report.md",
+        }
+
+    monkeypatch.setattr(cli, "load_settings", lambda: {})
+    monkeypatch.setattr(cli, "paid_provider_names", lambda settings: [])
+    monkeypatch.setattr(cli, "llm_is_configured", lambda settings: False)
+    monkeypatch.setattr(cli.typer, "prompt", fake_prompt)
+    monkeypatch.setattr(cli.typer, "confirm", fake_confirm)
+    monkeypatch.setattr(cli, "run_analysis", fake_run)
+
+    cli._wizard()
+
+    industry_prompts = [item for item in prompts if "行业名称" in item[0]]
+    assert industry_prompts
+    assert industry_prompts[0][1]["default"] == ""
+    assert captured["options"].industry_name is None
+
+
 def test_plan_preview_lists_scope_and_skipped_count(monkeypatch):
     messages = []
     monkeypatch.setattr(

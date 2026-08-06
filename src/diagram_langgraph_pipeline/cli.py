@@ -239,7 +239,10 @@ def _wizard() -> None:
             ticker = typer.prompt("Ticker").strip().upper()
         industry_name = None
         if task_type is TaskType.INDUSTRY:
-            industry_name = typer.prompt("行业名称").strip()
+            industry_name = (
+                typer.prompt("行业名称（留空从证券元数据推断）", default="").strip()
+                or None
+            )
         elif task_type is TaskType.FULL:
             industry_name = (
                 typer.prompt("行业名称（留空从证券元数据推断）", default="").strip()
