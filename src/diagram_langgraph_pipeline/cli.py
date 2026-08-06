@@ -94,7 +94,7 @@ def init_database(
 @app.command("run")
 def run_command(
     ticker: Optional[str] = typer.Argument(
-        None, help="需要个股数据的任务填写证券代码。"
+        None, help="所有任务都必须填写真实证券代码。"
     ),
     task: TaskType = typer.Option(
         TaskType.FULL, "--task", case_sensitive=False

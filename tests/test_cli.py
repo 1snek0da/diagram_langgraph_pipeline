@@ -23,6 +23,12 @@ def test_help_lists_hybrid_commands():
     assert "demo" in result.stdout
 
 
+def test_run_help_says_every_task_requires_a_ticker():
+    result = runner.invoke(cli.app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "所有任务都必须填写真实证券代码" in result.stdout
+
+
 def test_no_arguments_on_non_tty_displays_help():
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0
