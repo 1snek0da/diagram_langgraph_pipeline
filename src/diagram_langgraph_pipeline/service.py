@@ -105,24 +105,20 @@ def run_analysis(
 
     events = RecordingEventSink(event_callback)
     ticker = (options.ticker or "").strip().upper()
-    metadata: Mapping[str, Any] = {}
-    if "stock_data_fetch" in plan.enabled_nodes:
-        metadata = repository.load_security(ticker) or {}
-    if "stock_data_fetch" in plan.enabled_nodes and not metadata and not options.offline:
+    metadata: Mapping[str, Any] = repository.load_security(ticker) or {}
+    if not metadata and not options.offline:
         try:
             metadata = YahooResearchAdapter(settings.get("YFINANCE_CACHE_DIR")).resolve_security(ticker)
             repository.upsert_security_metadata(dict(metadata))
         except Exception:
             metadata = {}
-    if "stock_data_fetch" in plan.enabled_nodes:
-        metadata = metadata or {
-            "ticker": ticker, "company_name": ticker, "market": "UNKNOWN",
-            "exchange": "UNKNOWN", "industry_name": "Unknown", "sector": None,
-        }
+    metadata = metadata or {
+        "ticker": ticker, "company_name": ticker, "market": "UNKNOWN",
+        "exchange": "UNKNOWN", "industry_name": "Unknown", "sector": None,
+    }
     external_ids = dict(metadata.get("external_ids") or {})
     if (
-        "stock_data_fetch" in plan.enabled_nodes
-        and ticker
+        ticker
         and not options.offline
         and "." not in ticker
         and not ticker.startswith("^")

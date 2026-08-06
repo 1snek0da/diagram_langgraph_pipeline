@@ -179,7 +179,7 @@ TASK_PLANS = {
         ),
         support_nodes=("planner", "industry_entry", "research_join", "review", "report"),
         optional_nodes=(),
-        required_inputs=("industry_name", "as_of_date", "investment_horizon"),
+        required_inputs=("ticker", "as_of_date", "investment_horizon"),
         required_outputs=(
             "industry_report_result",
             "upstream_capex_result",
@@ -278,7 +278,7 @@ TASK_PLANS = {
         required_nodes=("index_analysis", "sector_technical", "sentiment"),
         support_nodes=("planner", "market_entry", "research_join", "review", "report"),
         optional_nodes=(),
-        required_inputs=("as_of_date",),
+        required_inputs=("ticker", "as_of_date"),
         required_outputs=(
             "index_analysis_result",
             "sector_technical_result",
