@@ -135,7 +135,7 @@ def run_analysis(
             repository.upsert_security_metadata(metadata)
         except Exception:
             pass
-    if "stock_data_fetch" in plan.enabled_nodes:
+    if "stock_data_fetch" in plan.enabled_nodes or plan.task_type is TaskType.MARKET:
         benchmark, sector = infer_comparisons(
             ticker,
             metadata,

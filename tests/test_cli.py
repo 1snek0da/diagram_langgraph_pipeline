@@ -271,6 +271,65 @@ def test_market_service_skips_security_lookup_and_target_prefetch(monkeypatch, t
     assert summary["coverage"]["daily_bars"] == 0
 
 
+def test_market_service_infers_comparisons_from_ticker_metadata(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class FakeRepository:
+        def __init__(self, dsn):
+            pass
+
+        def check_health(self):
+            return {"cache_schema_ready": True}
+
+        def load_security(self, ticker):
+            return {"ticker": ticker, "company_name": "Apple", "sector": "Technology"}
+
+        def save_final_report(self, run_id, markdown):
+            pass
+
+        def update_report_path(self, run_id, path):
+            pass
+
+    class FakeMarketProvider:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def fetch(self, ticker, start, end):
+            raise AssertionError("market task must not prefetch a target ticker")
+
+    def fake_run_research(initial_state, deps):
+        captured["initial_state"] = initial_state
+        return {
+            **initial_state,
+            "run_id": "run-1",
+            "final_markdown": "# report",
+            "completed_nodes": [],
+            "failed_nodes": [],
+        }
+
+    monkeypatch.setattr(service, "PostgresAnalysisRepository", FakeRepository)
+    monkeypatch.setattr(service, "DatabaseFirstMarketDataProvider", FakeMarketProvider)
+    monkeypatch.setattr(service, "build_research_provider", lambda *args, **kwargs: object())
+    monkeypatch.setattr(service, "build_optional_llm_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "run_research", fake_run_research)
+
+    service.run_analysis(
+        RunOptions(
+            ticker="AAPL",
+            task_type=TaskType.MARKET,
+            llm=False,
+            output=tmp_path / "market.md",
+        ),
+        {"DATABASE_URL": "postgresql://example"},
+    )
+
+    initial = captured["initial_state"]
+    assert initial["benchmark_ticker"] == "^GSPC"
+    assert initial["sector_index_ticker"] == "XLK"
+
+
 def test_industry_service_uses_real_ticker_metadata_without_target_prefetch(
     monkeypatch, tmp_path
 ):
