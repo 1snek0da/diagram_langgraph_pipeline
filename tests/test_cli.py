@@ -257,6 +257,7 @@ def test_market_service_skips_security_lookup_and_target_prefetch(monkeypatch, t
 
     _, summary = service.run_analysis(
         RunOptions(
+            run_id="run-api-1",
             ticker="MSFT",
             task_type=TaskType.MARKET,
             benchmark="^GSPC",
@@ -269,6 +270,7 @@ def test_market_service_skips_security_lookup_and_target_prefetch(monkeypatch, t
 
     initial = captured["initial_state"]
     assert initial["task_type"] == "market"
+    assert initial["run_id"] == "run-api-1"
     assert captured["loaded_ticker"] == "MSFT"
     assert initial["ticker"] == "MSFT"
     assert initial["company_name"] == "Microsoft"
@@ -459,6 +461,21 @@ def test_result_summary_exposes_total_and_per_node_token_usage(tmp_path):
     assert usage["cached_tokens"] == 20
     assert usage["total_tokens"] == 150
     assert usage["nodes"]["planner"]["estimated_prompt_tokens"] == 100
+
+
+def test_result_summary_exposes_optional_node_statuses(tmp_path):
+    summary = result_summary(
+        {
+            "run_id": "run-1",
+            "ticker": "AAPL",
+            "optional_node_statuses": {
+                "marginal_change": {"status": "skipped", "reason": "no licensed source"}
+            },
+        },
+        {"provider_status_counts": {}},
+        tmp_path / "report.md",
+    )
+    assert summary["optional_node_statuses"]["marginal_change"]["status"] == "skipped"
 
 
 def test_result_summary_exposes_task_plan_progress(tmp_path):

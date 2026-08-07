@@ -41,6 +41,7 @@ class TargetMarketDataUnavailableError(RuntimeError):
 
 @dataclass(frozen=True)
 class RunOptions:
+    run_id: str | None = None
     ticker: str | None = None
     task_type: TaskType = TaskType.FULL
     industry_name: str | None = None
@@ -188,39 +189,42 @@ def run_analysis(
         allow_paid=options.allow_paid,
         network_enabled=True,
     )
+    initial_state = {
+        "task_type": plan.task_type.value,
+        "ticker": ticker,
+        "company_name": metadata.get("company_name") or (ticker if ticker else ""),
+        "industry_name": (
+            (options.industry_name or "").strip()
+            or str(metadata.get("industry_name") or "Unknown")
+        ),
+        "company_cik": external_ids.get("cik", ""),
+        "as_of_date": options.as_of.isoformat(),
+        "investment_horizon": options.horizon,
+        "user_request": (
+            f"研究任务 {plan.task_type.value}："
+            f"{ticker or (options.industry_name or plan.conclusion_scope)}；"
+            f"报告窗口 {options.report_days} 个交易日"
+        ),
+        "benchmark_ticker": benchmark or "",
+        "sector_index_ticker": sector or "",
+        "run_profile": "d4f_70d",
+        "daily_trading_days": options.report_days,
+        "technical_trading_days": options.technical_days,
+        "market_history_days": natural_days,
+        "market_history_fallback_days": natural_days,
+        "technical_history_days": natural_days,
+        "research_window_start": research_start,
+        "intraday_interval": "60m",
+        "intraday_target_bars_per_day": 15,
+        "news_limit": 36,
+        "research_inputs": {},
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+    if options.run_id:
+        initial_state["run_id"] = options.run_id
     state = run_research(
-        {
-            "task_type": plan.task_type.value,
-            "ticker": ticker,
-            "company_name": metadata.get("company_name") or (ticker if ticker else ""),
-            "industry_name": (
-                (options.industry_name or "").strip()
-                or str(metadata.get("industry_name") or "Unknown")
-            ),
-            "company_cik": external_ids.get("cik", ""),
-            "as_of_date": options.as_of.isoformat(),
-            "investment_horizon": options.horizon,
-            "user_request": (
-                f"研究任务 {plan.task_type.value}："
-                f"{ticker or (options.industry_name or plan.conclusion_scope)}；"
-                f"报告窗口 {options.report_days} 个交易日"
-            ),
-            "benchmark_ticker": benchmark or "",
-            "sector_index_ticker": sector or "",
-            "run_profile": "d4f_70d",
-            "daily_trading_days": options.report_days,
-            "technical_trading_days": options.technical_days,
-            "market_history_days": natural_days,
-            "market_history_fallback_days": natural_days,
-            "technical_history_days": natural_days,
-            "research_window_start": research_start,
-            "intraday_interval": "60m",
-            "intraday_target_bars_per_day": 15,
-            "news_limit": 36,
-            "research_inputs": {},
-            "retry_count": 0,
-            "max_retries": 1,
-        },
+        initial_state,
         AgentDependencies(
             market_data=market_provider,
             research=research,
@@ -428,6 +432,7 @@ def result_summary(state: Mapping[str, Any], acquisition, report_path: Path) -> 
         "skipped_nodes": state.get("skipped_nodes", []),
         "completed_nodes": state.get("completed_nodes", []),
         "failed_nodes": state.get("failed_nodes", []),
+        "optional_node_statuses": state.get("optional_node_statuses", {}),
         "conclusion_scope": state.get("conclusion_scope"),
         "coverage": acquisition, "provider_calls": acquisition.get("provider_status_counts", {}),
         "d4f_token_usage": {
