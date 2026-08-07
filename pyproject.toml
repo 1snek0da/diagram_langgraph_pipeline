@@ -31,6 +31,12 @@ sources = [
 postgres = [
     "psycopg[binary]>=3.2,<4",
 ]
+web = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
+    "streamlit>=1.28,<2",
+    "plotly>=5.15,<7",
+]
 
 [project.scripts]
 diagram-langgraph-pipeline = "diagram_langgraph_pipeline.__main__:main"
