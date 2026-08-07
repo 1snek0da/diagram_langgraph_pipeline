@@ -5,7 +5,19 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
-from typing import Any
+from typing import Any, Mapping
+
+
+_RUN_RECORD_SELECT = """
+    SELECT analysis_runs.id::text, analysis_runs.ticker, industries.industry_name,
+           analysis_runs.as_of_date, analysis_runs.investment_horizon,
+           analysis_runs.task_type, analysis_runs.user_request, analysis_runs.status,
+           analysis_runs.retry_count, analysis_runs.max_retries,
+           analysis_runs.error_code, analysis_runs.error_summary,
+           analysis_runs.created_at, analysis_runs.updated_at
+    FROM analysis_runs
+    LEFT JOIN industries ON industries.id=analysis_runs.industry_id
+"""
 
 
 class PostgresAnalysisRepository:
@@ -46,6 +58,248 @@ class PostgresAnalysisRepository:
             "market_schema_ready": market_ready,
             "cache_schema_ready": cache_ready,
         }
+
+    def create_pending_run(self, run_id: str, request: Mapping[str, Any]) -> None:
+        ticker = str(request["ticker"]).upper()
+        industry_name = str(request.get("industry_name") or "Unknown")
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM industries WHERE industry_name=%s AND parent_industry_id IS NULL LIMIT 1",
+                (industry_name,),
+            )
+            row = cursor.fetchone()
+            if row:
+                industry_id = row[0]
+            else:
+                cursor.execute(
+                    "INSERT INTO industries (industry_name) VALUES (%s) RETURNING id",
+                    (industry_name,),
+                )
+                industry_id = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                INSERT INTO securities (ticker, company_name, market, exchange, industry_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (ticker) DO UPDATE SET
+                    company_name=EXCLUDED.company_name,
+                    industry_id=EXCLUDED.industry_id,
+                    updated_at=now()
+                """,
+                (
+                    ticker,
+                    request.get("company_name") or ticker,
+                    request.get("market") or "US",
+                    request.get("exchange") or "NASDAQ",
+                    industry_id,
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO analysis_runs
+                    (id, ticker, industry_id, as_of_date, investment_horizon, task_type,
+                     user_request, status, retry_count, max_retries)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (
+                    run_id,
+                    ticker,
+                    industry_id,
+                    request.get("as_of_date") or date.today(),
+                    request.get("investment_horizon") or "medium",
+                    request.get("task_type") or "full",
+                    request.get("user_request"),
+                    int(request.get("retry_count", 0)),
+                    int(request.get("max_retries", 2)),
+                ),
+            )
+
+    def update_run_lifecycle(
+        self,
+        run_id: str,
+        status: str,
+        *,
+        error_code: str | None = None,
+        error_summary: str | None = None,
+    ) -> None:
+        safe_summary = (error_summary or "")[:500]
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE analysis_runs
+                   SET status=%s, error_code=%s, error_summary=%s, updated_at=now()
+                 WHERE id=%s
+                """,
+                (status, error_code, safe_summary or None, run_id),
+            )
+
+    def interrupt_incomplete_runs(self) -> int:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE analysis_runs
+                   SET status='interrupted', updated_at=now()
+                 WHERE status IN ('pending', 'running')
+                """
+            )
+            return cursor.rowcount
+
+    def get_run_record(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                _RUN_RECORD_SELECT + " WHERE analysis_runs.id=%s",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+        return _run_record(row) if row else None
+
+    def list_run_records(
+        self,
+        *,
+        ticker: str | None,
+        task_type: str | None,
+        status: str | None,
+        date_from: date | None,
+        date_to: date | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if ticker:
+            clauses.append("analysis_runs.ticker=%s")
+            params.append(ticker.upper())
+        if task_type:
+            clauses.append("analysis_runs.task_type=%s")
+            params.append(task_type)
+        if status:
+            clauses.append("analysis_runs.status=%s")
+            params.append(status)
+        if date_from:
+            clauses.append("analysis_runs.created_at::date >= %s")
+            params.append(date_from)
+        if date_to:
+            clauses.append("analysis_runs.created_at::date <= %s")
+            params.append(date_to)
+        where_sql = " WHERE " + " AND ".join(clauses) if clauses else ""
+        bounded_limit = max(1, min(int(limit), 100))
+        bounded_offset = max(0, int(offset))
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM analysis_runs" + where_sql,
+                tuple(params),
+            )
+            total = cursor.fetchone()[0]
+            cursor.execute(
+                _RUN_RECORD_SELECT
+                + where_sql
+                + " ORDER BY analysis_runs.created_at DESC LIMIT %s OFFSET %s",
+                (*params, bounded_limit, bounded_offset),
+            )
+            rows = cursor.fetchall()
+        return [_run_record(row) for row in rows], total
+
+    def list_node_records(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id::text, node_name, attempt_no, status, started_at, ended_at,
+                       error_message, input_json, output_json
+                FROM node_runs
+                WHERE run_id=%s
+                ORDER BY started_at, attempt_no
+                """,
+                (run_id,),
+            )
+            rows = cursor.fetchall()
+        return [
+            _jsonable(
+                {
+                    "id": row[0],
+                    "node_name": row[1],
+                    "attempt_no": row[2],
+                    "status": row[3],
+                    "started_at": row[4],
+                    "ended_at": row[5],
+                    "error_message": row[6],
+                    "input": row[7] or {},
+                    "output": row[8] or {},
+                }
+            )
+            for row in rows
+        ]
+
+    def get_report_record(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id::text, run_id::text, report_markdown, report_path, created_at
+                FROM final_reports
+                WHERE run_id=%s
+                """,
+                (run_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return _jsonable(
+            {
+                "id": row[0],
+                "run_id": row[1],
+                "report_markdown": row[2],
+                "report_path": row[3],
+                "created_at": row[4],
+            }
+        )
+
+    def get_market_bar_records(
+        self,
+        ticker: str,
+        start_date: date | None,
+        end_date: date | None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["ticker=%s", "frequency='daily'"]
+        params: list[Any] = [ticker.upper()]
+        if start_date:
+            clauses.append("trade_date >= %s")
+            params.append(start_date)
+        if end_date:
+            clauses.append("trade_date <= %s")
+            params.append(end_date)
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (trade_date)
+                    trade_date, open_price, high_price, low_price, close_price,
+                    adj_close_price, volume, turnover_amount, turnover_rate, source
+                FROM market_bars
+                WHERE """
+                + " AND ".join(clauses)
+                + """
+                ORDER BY trade_date,
+                    CASE WHEN source='yfinance' THEN 0 ELSE 1 END,
+                    created_at DESC
+                """,
+                tuple(params),
+            )
+            rows = cursor.fetchall()
+        return [
+            _jsonable(
+                {
+                    "trade_date": row[0],
+                    "open": row[1],
+                    "high": row[2],
+                    "low": row[3],
+                    "close": row[4],
+                    "adj_close": row[5],
+                    "volume": row[6],
+                    "turnover_amount": row[7],
+                    "turnover_rate": row[8],
+                    "source": row[9],
+                }
+            )
+            for row in rows
+        ]
 
     def load_security(self, ticker: str) -> dict[str, Any] | None:
         with self._connect() as connection, connection.cursor() as cursor:
@@ -794,6 +1048,27 @@ class PostgresAnalysisRepository:
                 "UPDATE analysis_runs SET status='failed', updated_at=now(), user_request=COALESCE(user_request,'') || %s WHERE id=%s",
                 (f"\nFailure: {error_message[:500]}", run_id),
             )
+
+
+def _run_record(row: tuple[Any, ...]) -> dict[str, Any]:
+    return _jsonable(
+        {
+            "id": row[0],
+            "ticker": row[1],
+            "industry_name": row[2],
+            "as_of_date": row[3],
+            "investment_horizon": row[4],
+            "task_type": row[5],
+            "user_request": row[6],
+            "status": row[7],
+            "retry_count": row[8],
+            "max_retries": row[9],
+            "error_code": row[10],
+            "error_summary": row[11],
+            "created_at": row[12],
+            "updated_at": row[13],
+        }
+    )
 
 
 def _json_text(value: Any) -> str:
