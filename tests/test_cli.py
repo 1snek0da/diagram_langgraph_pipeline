@@ -23,6 +23,39 @@ def test_help_lists_hybrid_commands():
     assert "demo" in result.stdout
 
 
+def test_demo_menu_confirms_selected_task_with_down_and_enter():
+    keys = iter(["down", "down", "enter"])
+
+    selected = cli._select_demo_task(read_key=keys.__next__, render=lambda *_: None)
+
+    assert selected is TaskType.FUNDAMENTAL
+
+
+def test_demo_menu_wraps_when_moving_up_from_first_option():
+    keys = iter(["up", "enter"])
+
+    selected = cli._select_demo_task(read_key=keys.__next__, render=lambda *_: None)
+
+    assert selected is TaskType.MARKET
+
+
+@pytest.mark.parametrize("task_type", list(TaskType))
+def test_demo_passes_selected_task_to_research(monkeypatch, task_type):
+    captured = {}
+    monkeypatch.setattr(cli, "_select_demo_task", lambda: task_type)
+
+    def fake_run_research(state, deps):
+        captured["state"] = state
+        return {**state, "final_markdown": "# demo"}
+
+    monkeypatch.setattr(cli, "run_research", fake_run_research)
+
+    result = runner.invoke(cli.app, ["demo"])
+
+    assert result.exit_code == 0
+    assert captured["state"]["task_type"] == task_type.value
+
+
 def test_run_help_says_every_task_requires_a_ticker():
     result = runner.invoke(cli.app, ["run", "--help"])
     assert result.exit_code == 0

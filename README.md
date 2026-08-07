@@ -97,6 +97,10 @@ Provider 或 LLM。基本面任务中的边际变化属于可选节点：获取�
 先确认，非交互运行必须显式传入 `--allow-paid`。成功报告默认写入 `outputs/`。
 向导运行结束后可选择 `tokens`，检查总 Token、缓存 Token、输入估算偏差及逐节点用量。
 
+### Demo 任务选择
+
+运行 `python -m diagram_langgraph_pipeline demo` 后，使用上、下方向键移动五种 Router 任务的高亮项，按 Enter 确认。Demo 使用固定离线数据，不连接数据库、不访问网络，也不调用 LLM。
+
 ## 接入生产数据
 
 生产行情可通过 `YFinanceMarketDataProvider` 接入：

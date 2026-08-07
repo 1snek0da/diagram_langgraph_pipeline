@@ -6,7 +6,7 @@ from datetime import date
 import json
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Callable, Optional
 
 import typer
 from rich.console import Console
@@ -208,6 +208,46 @@ def data_refresh_command(
         stdout.print(result)
 
 
+def _read_demo_key() -> str:
+    """Read one normalized key from a Windows terminal."""
+    if sys.platform != "win32":
+        raise RuntimeError("交互 Demo 需要支持方向键的 Windows 终端")
+    import msvcrt
+
+    key = msvcrt.getwch()
+    if key in ("\x00", "\xe0"):
+        return {"H": "up", "P": "down"}.get(msvcrt.getwch(), "")
+    if key == "\r":
+        return "enter"
+    return key.lower()
+
+
+def _render_demo_menu(options: tuple[TaskType, ...], selected: int) -> None:
+    typer.echo("\x1b[2J\x1b[H", nl=False)
+    typer.echo("请选择 Demo 任务（↑/↓ 移动，Enter 确认）：")
+    for index, option in enumerate(options):
+        marker = "❯" if index == selected else " "
+        typer.echo(f"{marker} {option.value}")
+
+
+def _select_demo_task(
+    *,
+    read_key: Callable[[], str] = _read_demo_key,
+    render: Callable[[tuple[TaskType, ...], int], None] = _render_demo_menu,
+) -> TaskType:
+    options = tuple(TaskType)
+    selected = 0
+    while True:
+        render(options, selected)
+        key = read_key()
+        if key == "up":
+            selected = (selected - 1) % len(options)
+        elif key == "down":
+            selected = (selected + 1) % len(options)
+        elif key == "enter":
+            return options[selected]
+
+
 @app.command("demo")
 def demo() -> None:
     """运行原有、无需数据库和网络的确定性演示。"""
@@ -216,6 +256,7 @@ def demo() -> None:
         "BENCH": make_market_payload(100.0, 0.0003),
         "SECTOR": make_market_payload(50.0, 0.0006),
     }
+    task_type = _select_demo_task()
     state = run_research(
         {
             "ticker": "DEMO", "company_name": "示例公司", "industry_name": "示例行业",
@@ -223,6 +264,7 @@ def demo() -> None:
             "user_request": "完整研究", "benchmark_ticker": "BENCH",
             "sector_index_ticker": "SECTOR", "research_inputs": demo_research_inputs(),
             "retry_count": 0, "max_retries": 1,
+            "task_type": task_type.value,
         },
         AgentDependencies(market_data=InMemoryMarketDataProvider(payloads), llm=None),
     )
