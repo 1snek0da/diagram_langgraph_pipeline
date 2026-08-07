@@ -38,6 +38,32 @@ class PostgresAnalysisRepository:
     def _connect(self):
         return self._psycopg.connect(self._dsn)
 
+    @staticmethod
+    def _ensure_top_level_industry(cursor: Any, industry_name: str) -> Any:
+        """Return one top-level industry while serializing same-name creation."""
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"industry:{industry_name}",),
+        )
+        cursor.execute(
+            """
+            SELECT id
+            FROM industries
+            WHERE industry_name=%s AND parent_industry_id IS NULL
+            ORDER BY created_at, id
+            LIMIT 1
+            """,
+            (industry_name,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+        cursor.execute(
+            "INSERT INTO industries (industry_name) VALUES (%s) RETURNING id",
+            (industry_name,),
+        )
+        return cursor.fetchone()[0]
+
     def check_health(self) -> dict[str, Any]:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -61,29 +87,14 @@ class PostgresAnalysisRepository:
 
     def create_pending_run(self, run_id: str, request: Mapping[str, Any]) -> None:
         ticker = str(request["ticker"]).upper()
-        industry_name = str(request.get("industry_name") or "Unknown")
+        industry_name = str(request.get("industry_name") or "Unknown").strip() or "Unknown"
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT id FROM industries WHERE industry_name=%s AND parent_industry_id IS NULL LIMIT 1",
-                (industry_name,),
-            )
-            row = cursor.fetchone()
-            if row:
-                industry_id = row[0]
-            else:
-                cursor.execute(
-                    "INSERT INTO industries (industry_name) VALUES (%s) RETURNING id",
-                    (industry_name,),
-                )
-                industry_id = cursor.fetchone()[0]
+            industry_id = self._ensure_top_level_industry(cursor, industry_name)
             cursor.execute(
                 """
                 INSERT INTO securities (ticker, company_name, market, exchange, industry_id)
                 VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (ticker) DO UPDATE SET
-                    company_name=EXCLUDED.company_name,
-                    industry_id=EXCLUDED.industry_id,
-                    updated_at=now()
+                ON CONFLICT (ticker) DO NOTHING
                 """,
                 (
                     ticker,
@@ -193,7 +204,7 @@ class PostgresAnalysisRepository:
             cursor.execute(
                 _RUN_RECORD_SELECT
                 + where_sql
-                + " ORDER BY analysis_runs.created_at DESC LIMIT %s OFFSET %s",
+                + " ORDER BY analysis_runs.created_at DESC, analysis_runs.id DESC LIMIT %s OFFSET %s",
                 (*params, bounded_limit, bounded_offset),
             )
             rows = cursor.fetchall()
@@ -203,8 +214,7 @@ class PostgresAnalysisRepository:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id::text, node_name, attempt_no, status, started_at, ended_at,
-                       error_message, input_json, output_json
+                SELECT id::text, node_name, attempt_no, status, started_at, ended_at
                 FROM node_runs
                 WHERE run_id=%s
                 ORDER BY started_at, attempt_no
@@ -221,9 +231,9 @@ class PostgresAnalysisRepository:
                     "status": row[3],
                     "started_at": row[4],
                     "ended_at": row[5],
-                    "error_message": row[6],
-                    "input": row[7] or {},
-                    "output": row[8] or {},
+                    "error_summary": (
+                        "Node execution failed" if row[3] == "failed" else None
+                    ),
                 }
             )
             for row in rows
@@ -233,7 +243,7 @@ class PostgresAnalysisRepository:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id::text, run_id::text, report_markdown, report_path, created_at
+                SELECT id::text, run_id::text, report_markdown, created_at
                 FROM final_reports
                 WHERE run_id=%s
                 """,
@@ -247,8 +257,7 @@ class PostgresAnalysisRepository:
                 "id": row[0],
                 "run_id": row[1],
                 "report_markdown": row[2],
-                "report_path": row[3],
-                "created_at": row[4],
+                "created_at": row[3],
             }
         )
 
@@ -580,21 +589,9 @@ class PostgresAnalysisRepository:
 
     def bootstrap_run(self, state: dict[str, Any]) -> None:
         ticker = str(state["ticker"]).upper()
-        industry_name = str(state["industry_name"])
+        industry_name = str(state["industry_name"]).strip() or "Unknown"
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT id FROM industries WHERE industry_name=%s AND parent_industry_id IS NULL LIMIT 1",
-                (industry_name,),
-            )
-            row = cursor.fetchone()
-            if row:
-                industry_id = row[0]
-            else:
-                cursor.execute(
-                    "INSERT INTO industries (industry_name) VALUES (%s) RETURNING id",
-                    (industry_name,),
-                )
-                industry_id = cursor.fetchone()[0]
+            industry_id = self._ensure_top_level_industry(cursor, industry_name)
             cursor.execute(
                 """
                 INSERT INTO securities (ticker, company_name, market, exchange, industry_id)

@@ -85,6 +85,26 @@ def test_create_pending_run_uses_placeholder_metadata(repository, cursor):
     assert "insert into securities" in sql_text
     assert "insert into analysis_runs" in sql_text
     assert "'pending'" in sql_text
+    assert "pg_advisory_xact_lock" in sql_text
+    securities_call = next(call for call in cursor.calls if "insert into securities" in call.sql.lower())
+    assert "on conflict (ticker) do nothing" in securities_call.sql.lower()
+
+
+def test_bootstrap_run_uses_the_same_locked_industry_lookup(repository, cursor):
+    cursor.rows.append(("industry-id",))
+
+    repository.bootstrap_run(
+        {
+            "run_id": "00000000-0000-0000-0000-000000000001",
+            "ticker": "AAPL",
+            "industry_name": "Technology",
+            "as_of_date": date(2026, 8, 6),
+            "investment_horizon": "medium",
+        }
+    )
+
+    sql_text = "\n".join(call.sql.lower() for call in cursor.calls)
+    assert "pg_advisory_xact_lock" in sql_text
 
 
 def test_update_run_lifecycle_sanitizes_error_summary(repository, cursor):
@@ -148,6 +168,7 @@ def test_list_run_records_clamps_limit_binds_filters_and_returns_count(repositor
     assert count_call.params == ("AAPL", "technical", "completed", date(2026, 8, 1), date(2026, 8, 7))
     assert list_call.params == (*count_call.params, 100, 0)
     assert "%s" in count_call.sql
+    assert "created_at desc, analysis_runs.id desc" in list_call.sql.lower()
 
 
 def test_list_node_records_returns_json_ready_values(repository, cursor):
@@ -155,8 +176,7 @@ def test_list_node_records_returns_json_ready_values(repository, cursor):
         [
             (
                 "node-id", "planner", 1, "completed",
-                datetime(2026, 8, 6, tzinfo=timezone.utc), None, None,
-                {"input": Decimal("1.25")}, {"output": date(2026, 8, 6)},
+                datetime(2026, 8, 6, tzinfo=timezone.utc), None,
             )
         ]
     )
@@ -167,21 +187,33 @@ def test_list_node_records_returns_json_ready_values(repository, cursor):
         {
             "id": "node-id", "node_name": "planner", "attempt_no": 1,
             "status": "completed", "started_at": "2026-08-06T00:00:00+00:00",
-            "ended_at": None, "error_message": None,
-            "input": {"input": "1.25"}, "output": {"output": "2026-08-06"},
+            "ended_at": None, "error_summary": None,
         }
     ]
+    node_sql = cursor.calls[-1].sql.lower()
+    assert "error_message" not in node_sql
+    assert "input_json" not in node_sql
+    assert "output_json" not in node_sql
+
+
+def test_list_node_records_returns_generic_failure_summary(repository, cursor):
+    cursor.rows.append([("node-id", "planner", 2, "failed", None, None)])
+
+    records = repository.list_node_records("run-id")
+
+    assert records[0]["error_summary"] == "Node execution failed"
 
 
 def test_get_report_record_returns_json_ready_values(repository, cursor):
-    cursor.rows.append(("report-id", "run-id", "# Report", "report.md", datetime(2026, 8, 6, tzinfo=timezone.utc)))
+    cursor.rows.append(("report-id", "run-id", "# Report", datetime(2026, 8, 6, tzinfo=timezone.utc)))
 
     record = repository.get_report_record("run-id")
 
     assert record == {
         "id": "report-id", "run_id": "run-id", "report_markdown": "# Report",
-        "report_path": "report.md", "created_at": "2026-08-06T00:00:00+00:00",
+        "created_at": "2026-08-06T00:00:00+00:00",
     }
+    assert "report_path" not in cursor.calls[-1].sql.lower()
 
 
 def test_get_market_bar_records_uses_optional_bound_dates(repository, cursor):
