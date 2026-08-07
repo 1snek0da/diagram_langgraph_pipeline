@@ -15,6 +15,13 @@ from diagram_langgraph_pipeline.service import RunOptions, result_summary, valid
 runner = CliRunner()
 
 
+def test_run_options_preserves_positional_ticker_with_keyword_run_id():
+    options = RunOptions("AAPL", run_id="run-api-1")
+
+    assert options.ticker == "AAPL"
+    assert options.run_id == "run-api-1"
+
+
 def test_help_lists_hybrid_commands():
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
@@ -277,6 +284,21 @@ def test_market_service_skips_security_lookup_and_target_prefetch(monkeypatch, t
     assert initial["benchmark_ticker"] == "^GSPC"
     assert initial["sector_index_ticker"] == "XLK"
     assert summary["coverage"]["daily_bars"] == 0
+
+    service.run_analysis(
+        RunOptions(
+            run_id="   ",
+            ticker="MSFT",
+            task_type=TaskType.MARKET,
+            benchmark="^GSPC",
+            sector_index="XLK",
+            llm=False,
+            output=tmp_path / "market-whitespace-run-id.md",
+        ),
+        {"DATABASE_URL": "postgresql://example"},
+    )
+
+    assert "run_id" not in captured["initial_state"]
 
 
 def test_market_service_infers_comparisons_from_ticker_metadata(

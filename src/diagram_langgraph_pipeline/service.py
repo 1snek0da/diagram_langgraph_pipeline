@@ -41,7 +41,6 @@ class TargetMarketDataUnavailableError(RuntimeError):
 
 @dataclass(frozen=True)
 class RunOptions:
-    run_id: str | None = None
     ticker: str | None = None
     task_type: TaskType = TaskType.FULL
     industry_name: str | None = None
@@ -56,6 +55,7 @@ class RunOptions:
     refresh: bool = False
     allow_paid: bool = False
     output: Path | None = None
+    run_id: str | None = None
 
 
 SECTOR_ETFS = {
@@ -221,8 +221,9 @@ def run_analysis(
         "retry_count": 0,
         "max_retries": 1,
     }
-    if options.run_id:
-        initial_state["run_id"] = options.run_id
+    run_id = (options.run_id or "").strip()
+    if run_id:
+        initial_state["run_id"] = run_id
     state = run_research(
         initial_state,
         AgentDependencies(
