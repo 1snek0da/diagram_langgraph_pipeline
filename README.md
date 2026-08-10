@@ -38,6 +38,21 @@ python -m diagram_langgraph_pipeline
 diagram-langgraph-pipeline
 ```
 
+## Web research terminal
+
+Install the optional web and PostgreSQL dependencies, apply migration 004, then run the API and Streamlit UI in separate terminals:
+
+```powershell
+python -m pip install -e ".[web,postgres]"
+python -m diagram_langgraph_pipeline init
+.\scripts\start_api.ps1
+.\scripts\start_streamlit.ps1
+```
+
+The terminal has six pages: research workspace, new analysis, workflow, market view, report, and history. The API exposes the five Router modes `full`, `industry`, `fundamental`, `technical`, and `market`. Run state, node progress, reports, and history are stored in PostgreSQL; incomplete runs are marked interrupted when the API starts. Configure `DLP_API_BASE_URL`, `DLP_API_MAX_WORKERS`, and `DLP_CORS_ORIGINS` in `.env.local` or the process environment.
+
+This product is research-only. It does not connect to a broker, place orders, or execute trades.
+
 ## 交互 CLI 与 DB-first 运行
 
 CLI 强制使用 PostgreSQL：先检查数据库，再从缓存读取行情与研究资料，只有覆盖不足或

@@ -142,7 +142,7 @@ class FakeStreamlit:
     def form_submit_button(self, *_args, **_kwargs):
         return self.submit
 
-    def _render(self, value):
+    def _render(self, value, **_kwargs):
         self.rendered_text.append(str(value))
 
     title = _render
@@ -170,6 +170,9 @@ class FakeStreamlit:
 
     def rerun(self):
         self.rerun_count += 1
+
+    def set_page_config(self, **_kwargs):
+        return None
 
     def text_for(self, token):
         return " ".join(self.rendered_text)
