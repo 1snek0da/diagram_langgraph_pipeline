@@ -50,7 +50,12 @@ class FakeGateway:
         return self._run
 
     def list_runs(self, **filters):
-        self.last_filters = {key: value for key, value in filters.items() if value is not None}
+        self.last_filters = {
+            key: value
+            for key, value in filters.items()
+            if value is not None and not (key == "limit" and value == 20)
+            and not (key == "offset" and value == 0)
+        }
         return RunPage(
             items=tuple(self._runs),
             total=len(self._runs),
@@ -165,6 +170,9 @@ class FakeStreamlit:
 
     def rerun(self):
         self.rerun_count += 1
+
+    def text_for(self, token):
+        return " ".join(self.rendered_text)
 
 
 def five_task_views() -> list[TaskTypeView]:
