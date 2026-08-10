@@ -39,6 +39,15 @@ def test_demo_menu_wraps_when_moving_up_from_first_option():
     assert selected is TaskType.MARKET
 
 
+@pytest.mark.parametrize("cancel_key", ["escape", "ctrl-c"])
+def test_demo_menu_cancels_without_selecting_a_task(cancel_key):
+    keys = iter([cancel_key])
+
+    selected = cli._select_demo_task(read_key=keys.__next__, render=lambda *_: None)
+
+    assert selected is None
+
+
 @pytest.mark.parametrize("task_type", list(TaskType))
 def test_demo_passes_selected_task_to_research(monkeypatch, task_type):
     captured = {}
@@ -54,6 +63,20 @@ def test_demo_passes_selected_task_to_research(monkeypatch, task_type):
 
     assert result.exit_code == 0
     assert captured["state"]["task_type"] == task_type.value
+
+
+def test_demo_cancel_exits_before_running_research(monkeypatch):
+    monkeypatch.setattr(cli, "_select_demo_task", lambda: None)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("cancelled demo must not run research")
+
+    monkeypatch.setattr(cli, "run_research", fail_if_called)
+
+    result = runner.invoke(cli.app, ["demo"])
+
+    assert result.exit_code == 0
+    assert "Demo 已取消" in result.stdout
 
 
 def test_run_help_says_every_task_requires_a_ticker():

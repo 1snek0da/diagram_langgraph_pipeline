@@ -219,6 +219,10 @@ def _read_demo_key() -> str:
         return {"H": "up", "P": "down"}.get(msvcrt.getwch(), "")
     if key == "\r":
         return "enter"
+    if key == "\x1b":
+        return "escape"
+    if key == "\x03":
+        return "ctrl-c"
     return key.lower()
 
 
@@ -234,7 +238,7 @@ def _select_demo_task(
     *,
     read_key: Callable[[], str] = _read_demo_key,
     render: Callable[[tuple[TaskType, ...], int], None] = _render_demo_menu,
-) -> TaskType:
+) -> TaskType | None:
     options = tuple(TaskType)
     selected = 0
     while True:
@@ -246,6 +250,8 @@ def _select_demo_task(
             selected = (selected + 1) % len(options)
         elif key == "enter":
             return options[selected]
+        elif key in {"escape", "ctrl-c"}:
+            return None
 
 
 @app.command("demo")
@@ -257,6 +263,9 @@ def demo() -> None:
         "SECTOR": make_market_payload(50.0, 0.0006),
     }
     task_type = _select_demo_task()
+    if task_type is None:
+        typer.echo("Demo 已取消。")
+        return
     state = run_research(
         {
             "ticker": "DEMO", "company_name": "示例公司", "industry_name": "示例行业",
