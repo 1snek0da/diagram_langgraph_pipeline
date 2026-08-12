@@ -85,3 +85,22 @@ def test_frontend_root_and_client_routes_are_served_without_hijacking_api(tmp_pa
     assert route.status_code == 200
     assert route.text == "<html>sites-v2</html>"
     assert api.json() == {"service": "ok", "storage": "ok"}
+
+
+def test_vinext_client_layout_uses_the_published_terminal_as_entry(tmp_path):
+    client_dir = tmp_path / "client"
+    client_dir.mkdir()
+    (client_dir / "trading-analysis-ui-design.html").write_text(
+        "<html>sites-v2-client</html>", encoding="utf-8"
+    )
+    app = create_app(
+        repository=HealthRepository(),
+        job_service=LifecycleJobs(),
+        frontend_dist=tmp_path,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.text == "<html>sites-v2-client</html>"

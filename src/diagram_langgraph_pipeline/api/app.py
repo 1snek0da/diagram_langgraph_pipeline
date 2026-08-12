@@ -97,12 +97,15 @@ def create_app(
         frontend_dist or resolved_settings.get("DLP_FRONTEND_DIST", "")
     )
     index_file = resolved_frontend_dist / "index.html"
+    if not index_file.is_file():
+        index_file = resolved_frontend_dist / "client" / "trading-analysis-ui-design.html"
+    static_root = index_file.parent
     if index_file.is_file():
         @app.get("/{frontend_path:path}", include_in_schema=False)
         async def serve_frontend(frontend_path: str) -> FileResponse:
-            requested = (resolved_frontend_dist / frontend_path).resolve()
+            requested = (static_root / frontend_path).resolve()
             try:
-                requested.relative_to(resolved_frontend_dist.resolve())
+                requested.relative_to(static_root.resolve())
             except ValueError:
                 return FileResponse(index_file)
             if requested.is_file():
