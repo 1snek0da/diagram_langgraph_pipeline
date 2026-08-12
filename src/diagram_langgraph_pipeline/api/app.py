@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Mapping
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from ..providers.postgres_repository import PostgresAnalysisRepository
 from ..runtime_config import load_settings
@@ -51,6 +52,7 @@ def create_app(
     repository: Any = None,
     job_service: Any = None,
     settings: Mapping[str, str] | None = None,
+    frontend_dist: str | Path | None = None,
 ) -> FastAPI:
     resolved_settings = dict(load_settings() if settings is None else settings)
     if repository is None:
@@ -90,6 +92,22 @@ def create_app(
         allow_headers=["Content-Type"],
     )
     app.include_router(create_router(repository, job_service, resolved_settings))
+
+    resolved_frontend_dist = Path(
+        frontend_dist or resolved_settings.get("DLP_FRONTEND_DIST", "")
+    )
+    index_file = resolved_frontend_dist / "index.html"
+    if index_file.is_file():
+        @app.get("/{frontend_path:path}", include_in_schema=False)
+        async def serve_frontend(frontend_path: str) -> FileResponse:
+            requested = (resolved_frontend_dist / frontend_path).resolve()
+            try:
+                requested.relative_to(resolved_frontend_dist.resolve())
+            except ValueError:
+                return FileResponse(index_file)
+            if requested.is_file():
+                return FileResponse(requested)
+            return FileResponse(index_file)
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:

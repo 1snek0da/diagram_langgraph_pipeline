@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from pathlib import Path
 
 from diagram_langgraph_pipeline.api.app import create_app
 
@@ -65,3 +66,22 @@ def test_storage_failure_uses_safe_503_envelope():
     }
     assert "secret" not in response.text
 
+
+def test_frontend_root_and_client_routes_are_served_without_hijacking_api(tmp_path):
+    (tmp_path / "index.html").write_text("<html>sites-v2</html>", encoding="utf-8")
+    app = create_app(
+        repository=HealthRepository(),
+        job_service=LifecycleJobs(),
+        frontend_dist=tmp_path,
+    )
+
+    with TestClient(app) as client:
+        root = client.get("/")
+        route = client.get("/report?run_id=run-1")
+        api = client.get("/api/v1/health")
+
+    assert root.status_code == 200
+    assert root.text == "<html>sites-v2</html>"
+    assert route.status_code == 200
+    assert route.text == "<html>sites-v2</html>"
+    assert api.json() == {"service": "ok", "storage": "ok"}
