@@ -29,6 +29,23 @@ PAGE_RENDERERS = {
 }
 
 
+def render_page_navigation(st: Any, state: Any) -> str:
+    current_page = state.get("page", "workspace")
+    label_by_page = {page: label for label, page in PAGE_LABELS.items()}
+    selected_label = st.segmented_control(
+        "页面导航",
+        options=tuple(PAGE_LABELS),
+        default=label_by_page.get(current_page, "研究工作台"),
+        required=True,
+        key="page_navigation",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    selected_page = PAGE_LABELS.get(selected_label, current_page)
+    state["page"] = selected_page
+    return selected_page
+
+
 def main(st_module: Any = None, gateway: Any = None) -> None:
     if st_module is None:
         import streamlit as st_module
@@ -45,10 +62,9 @@ def main(st_module: Any = None, gateway: Any = None) -> None:
     except Exception:
         st.error("无法配置分析服务，请检查 API 地址。")
         return
-    page = state.get("page", "workspace")
+    page = render_page_navigation(st, state)
     PAGE_RENDERERS.get(page, workspace.render)(st, active_gateway, state)
 
 
 if __name__ == "__main__":
     main()
-

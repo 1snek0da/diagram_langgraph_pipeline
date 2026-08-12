@@ -92,6 +92,7 @@ class FakeStreamlit:
         self.downloads: list[DownloadRecord] = []
         self.metrics: list[tuple[str, Any]] = []
         self.frames: list[Any] = []
+        self.segmented_controls: list[tuple[str, tuple[Any, ...]]] = []
         self.rerun_count = 0
 
     def __enter__(self):
@@ -123,6 +124,11 @@ class FakeStreamlit:
             if getattr(option, "task_type", None) == selected:
                 return option
         return selected
+
+    def segmented_control(self, label, options, default=None, **_kwargs):
+        options = tuple(options)
+        self.segmented_controls.append((label, options))
+        return self._value(label, default)
 
     def text_input(self, label, value="", **_kwargs):
         return self._value(label, value)
