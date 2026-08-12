@@ -12,5 +12,14 @@ try {
 }
 
 $env:DLP_FRONTEND_DIST = Join-Path $projectRoot 'frontend\dist'
-& .\.venv\Scripts\python.exe -m uvicorn diagram_langgraph_pipeline.api.app:create_app `
+$repoRoot = Split-Path -Parent $projectRoot
+$pythonExe = Join-Path $repoRoot '.venv\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $pythonExe)) {
+    $pythonExe = Join-Path $projectRoot '.venv\Scripts\python.exe'
+}
+if (-not (Test-Path -LiteralPath $pythonExe)) {
+    throw "找不到 Python 虚拟环境。已检查：$repoRoot\.venv 和 $projectRoot\.venv"
+}
+$env:PYTHONPATH = Join-Path $projectRoot 'src'
+& $pythonExe -m uvicorn diagram_langgraph_pipeline.api.app:create_app `
     --factory --host 127.0.0.1 --port 8000

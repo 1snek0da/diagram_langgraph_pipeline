@@ -155,8 +155,17 @@
     .node-name { font-weight: 700; margin-bottom: 7px; }
     .node-desc { color: var(--muted); font-size: 11px; line-height: 1.5; }
     .node-status { margin-top: 10px; color: var(--faint); font-size: 10px; }
+    .node-progress-track { position: absolute; left: 12px; right: 12px; bottom: 10px; height: 7px; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: #0b1017; box-shadow: inset 0 0 0 1px rgba(0,0,0,.2); }
+    .node-progress-fill { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .45s ease, background .25s ease; box-shadow: 0 0 9px currentColor; }
+    .node.complete .node-progress-fill { width: 100%; background: var(--positive); }
+    .node.degraded .node-progress-fill { width: 100%; background: var(--warning); }
+    .node.failed .node-progress-fill { width: 100%; background: var(--negative); }
+    .node.running .node-progress-fill { width: 62%; background: var(--accent); animation: progress-pulse 1.35s ease-in-out infinite; }
+    .node-error { display: none; margin-top: 8px; color: #e8a1a1; font-size: 10px; line-height: 1.4; }
+    .node.failed .node-error { display: block; }
     .node.running::after { content: ""; position: absolute; inset: -1px; border: 1px solid var(--accent); border-radius: inherit; animation: node-pulse 1.8s ease infinite; pointer-events: none; }
     @keyframes node-pulse { 0%,100% { opacity:.12; } 50% { opacity:.62; } }
+    @keyframes progress-pulse { 0%,100% { transform: translateX(-18%); opacity: .65; } 50% { transform: translateX(58%); opacity: 1; } }
     .decision-flow { display: grid; grid-template-columns: 1.3fr .9fr .9fr 1fr; gap: 10px; }
     .loop-note { margin-top: 10px; padding: 10px 12px; border-left: 2px solid var(--warning); color: #d6c89f; background: #211e15; font-size: 12px; }
     .tabs { display: flex; gap: 4px; padding: 4px; background: #0f151d; border: 1px solid var(--line); border-radius: 9px; }
@@ -183,6 +192,7 @@
     .report-rating { font-size: 30px; font-weight: 750; color: #cfe1f7; }
     .report-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .report-section { padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
+    .report-live { white-space: pre-wrap; word-break: break-word; max-height: 680px; overflow: auto; color: #d9e2ec; line-height: 1.7; font-size: 13px; }
     .report-section:last-child { border-bottom: 0; }
     .report-section p { color: var(--muted); line-height: 1.7; margin-bottom: 0; }
     .bullet-list { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.7; }
@@ -389,6 +399,8 @@
       pages.forEach(page => page.classList.toggle('active', page.id === `page-${name}`));
       navButtons.forEach(button => button.classList.toggle('active', button.dataset.page === name));
       if (syncHistory) navigateTo(name, runId);
+      if (name === 'report') loadReport(runId);
+      if (name === 'workflow') loadWorkflow(runId);
       window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
     }
     function showApiError(error) {
@@ -426,21 +438,40 @@
         setText('#page-workflow h1 + .subtitle', `${run.ticker} ${run.investment_horizon} 研究任务正在执行。`);
         setText('#workflowStatus', run.status);
         const nodeElements = [...document.querySelectorAll('#page-workflow .node')];
-        nodes.items.slice(0, nodeElements.length).forEach((node, index) => {
-          nodeElements[index].classList.toggle('complete', node.status === 'completed');
-          nodeElements[index].classList.toggle('running', node.status === 'running');
-          nodeElements[index].classList.toggle('waiting', node.status === 'pending' || node.status === 'skipped');
-          const status = nodeElements[index].querySelector('.node-status');
-          if (status) status.textContent = node.status;
+        nodeElements.forEach(element => {
+          if (!element.querySelector('.node-progress-track')) {
+            element.insertAdjacentHTML('beforeend', '<div class="node-progress-track" aria-hidden="true"><div class="node-progress-fill"></div></div><div class="node-error"></div>');
+          }
         });
+        nodes.items.slice(0, nodeElements.length).forEach((node, index) => {
+          const element = nodeElements[index];
+          element.classList.toggle('complete', node.status === 'completed');
+          element.classList.toggle('running', node.status === 'running');
+          element.classList.toggle('degraded', node.status === 'degraded' || node.status === 'skipped');
+          element.classList.toggle('failed', node.status === 'failed');
+          element.classList.toggle('waiting', node.status === 'pending' || node.status === 'skipped');
+          const status = nodeElements[index].querySelector('.node-status');
+          if (status) status.textContent = node.status === 'completed' ? '已完成' : node.status === 'degraded' ? '部分完成' : node.status === 'failed' ? '失败' : node.status;
+          const error = element.querySelector('.node-error');
+          if (error) error.textContent = node.error_summary || '';
+        });
+        if (runId === appState.runId && !['completed', 'degraded', 'failed', 'interrupted'].includes(run.status)) {
+          window.clearTimeout(loadWorkflow.timer);
+          loadWorkflow.timer = window.setTimeout(() => loadWorkflow(runId), 1800);
+        }
       } catch (error) { showApiError(error); }
     }
     async function loadReport(runId = appState.runId) {
-      if (!runId) return;
       try {
+        if (!runId) {
+          const page = await api.listRuns({ limit: 1 });
+          runId = page.items[0]?.run_id;
+          if (runId) appState.runId = runId;
+        }
+        if (!runId) { showToast('请先选择一条研究任务，再查看报告。'); return; }
         const report = await api.getReport(runId);
         const panel = document.querySelector('#page-report .report-columns .panel .panel-body');
-        if (panel) panel.textContent = report.report_markdown;
+        if (panel) { panel.classList.add('report-live'); panel.textContent = report.report_markdown; }
       } catch (error) { showApiError(error); }
     }
     async function loadMarket() {
@@ -452,7 +483,7 @@
       } catch (error) { showApiError(error); }
     }
     navButtons.forEach(button => button.addEventListener('click', () => openPage(button.dataset.page)));
-    document.querySelectorAll('[data-goto]').forEach(button => button.addEventListener('click', () => openPage(button.dataset.goto)));
+    document.querySelectorAll('[data-goto]').forEach(button => button.addEventListener('click', () => openPage(button.dataset.goto, button.dataset.runId || appState.runId)));
     document.getElementById('startResearch').addEventListener('click', async () => {
       try { const page = await api.listRuns({ limit: 1 }); const latest = page.items[0]; openPage('workflow', latest?.run_id); await loadWorkflow(latest?.run_id); }
       catch (error) { showApiError(error); }
@@ -475,7 +506,13 @@
     }));
     document.getElementById('advanceWorkflow').addEventListener('click', () => loadWorkflow());
     document.getElementById('downloadReport').addEventListener('click', async () => {
-      try { const report = await api.getReport(); const blob = new Blob([report.report_markdown], { type: 'text/markdown;charset=utf-8' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${appState.runId || 'research-report'}.md`; link.click(); URL.revokeObjectURL(link.href); }
+      try {
+        let runId = appState.runId;
+        if (!runId) { const page = await api.listRuns({ limit: 1 }); runId = page.items[0]?.run_id; }
+        if (!runId) { showToast('没有可下载的研究报告。'); return; }
+        const report = await api.getReport(runId);
+        const blob = new Blob([report.report_markdown], { type: 'text/markdown;charset=utf-8' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${runId}.md`; link.click(); URL.revokeObjectURL(link.href);
+      }
       catch (error) { showApiError(error); }
     });
     window.addEventListener('popstate', () => { const route = routeFromLocation(); appState.runId = route.runId; openPage(route.page, route.runId, false); });

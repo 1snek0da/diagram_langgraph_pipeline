@@ -14,3 +14,16 @@ test("published terminal wires the original page to the shared API client", () =
   assert.match(html, /getMarketBars/);
   assert.doesNotMatch(html, /推进演示状态/);
 });
+
+test("workflow nodes expose in-card progress fill and failure details", () => {
+  assert.match(html, /node-progress-track/);
+  assert.match(html, /node-progress-fill/);
+  assert.match(html, /error_summary/);
+  assert.match(html, /progress-fill/);
+  assert.match(html, /setTimeout\(\(\) => loadWorkflow/);
+});
+
+test("report navigation loads the selected run report", () => {
+  assert.match(html, /name === 'report'\) loadReport\(runId\)/);
+  assert.match(html, /getReport\(runId\)/);
+});

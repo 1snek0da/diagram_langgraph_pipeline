@@ -61,3 +61,11 @@ def test_web_api_migration_extends_analysis_lifecycle():
     assert "'degraded'" in sql
     assert "'interrupted'" in sql
     assert "idx_analysis_runs_web_history" in sql
+
+
+def test_web_api_migration_allows_degraded_node_runs():
+    sql = Path("database/migrations/005_degraded_node_runs.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+    assert "node_runs_status_check" in sql
+    assert "status in ('pending','running','completed','degraded','failed','skipped')" in sql
