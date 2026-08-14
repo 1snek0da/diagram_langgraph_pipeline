@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智能投研终端</title>
+  <meta name="description" content="多智能体金融研究与交易决策演示平台">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --surface: #121821;
+      --surface-2: #18212c;
+      --surface-3: #202b38;
+      --line: #2a3543;
+      --line-soft: #202a36;
+      --text: #edf2f7;
+      --muted: #9aa8b7;
+      --faint: #6f7d8b;
+      --accent: #5b87c7;
+      --accent-soft: #1b2b41;
+      --positive: #48a982;
+      --negative: #d46b6b;
+      --warning: #d2a84f;
+      --radius: 12px;
+      --control-radius: 8px;
+      --sidebar: 220px;
+      --evidence: 320px;
+      font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-width: 1180px; min-height: 100%; background: var(--bg); color: var(--text); }
+    body { min-height: 100vh; font-size: 14px; }
+    button, input, select, textarea { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .mono, .metric, .number { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; }
+    .app { display: grid; grid-template-columns: var(--sidebar) minmax(720px, 1fr); min-height: 100vh; }
+    .sidebar {
+      position: sticky; top: 0; height: 100vh; padding: 22px 16px 16px;
+      border-right: 1px solid var(--line); background: #0f141b;
+      display: flex; flex-direction: column;
+    }
+    .brand { padding: 0 10px 22px; border-bottom: 1px solid var(--line-soft); }
+    .brand-name { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .02em; }
+    .brand-mark { width: 26px; height: 26px; border: 1px solid var(--accent); border-radius: 7px; display: grid; place-items: center; color: var(--accent); font: 700 12px/1 "Cascadia Code", monospace; }
+    .brand-sub { margin-top: 7px; color: var(--faint); font-size: 11px; }
+    .nav { display: grid; gap: 5px; padding-top: 18px; }
+    .nav-button {
+      appearance: none; border: 0; background: transparent; color: var(--muted); border-radius: var(--control-radius);
+      padding: 10px 11px; text-align: left; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+      transition: background .18s ease, color .18s ease, transform .18s ease;
+    }
+    .nav-button:hover { color: var(--text); background: var(--surface-2); }
+    .nav-button:active { transform: translateY(1px); }
+    .nav-button.active { background: var(--accent-soft); color: #dce9fb; }
+    .nav-index { color: var(--faint); font-size: 11px; }
+    .sidebar-footer { margin-top: auto; padding: 14px 10px 4px; border-top: 1px solid var(--line-soft); color: var(--faint); font-size: 11px; line-height: 1.6; }
+    .demo-label { color: var(--warning); }
+    .shell { min-width: 0; }
+    .command-bar {
+      height: 66px; position: sticky; top: 0; z-index: 5; background: rgba(13,17,23,.96); border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 10px; padding: 0 22px;
+    }
+    .symbol-box { display: grid; grid-template-columns: 84px 146px; border: 1px solid var(--line); border-radius: var(--control-radius); overflow: hidden; }
+    .symbol-code { padding: 9px 11px; background: var(--surface-2); color: var(--text); border-right: 1px solid var(--line); font-weight: 700; }
+    .symbol-name { padding: 9px 11px; color: var(--muted); white-space: nowrap; }
+    .command-control { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: var(--control-radius); padding: 9px 10px; min-width: 116px; }
+    .command-control.date { min-width: 134px; }
+    .command-spacer { flex: 1; }
+    .button { border: 1px solid var(--line); background: var(--surface-2); padding: 9px 14px; border-radius: var(--control-radius); cursor: pointer; font-weight: 650; white-space: nowrap; transition: transform .16s ease, background .16s ease, border-color .16s ease; }
+    .button:hover { background: var(--surface-3); border-color: #405168; }
+    .button:active { transform: scale(.98); }
+    .button.primary { border-color: #587fb4; background: var(--accent); color: #07111e; }
+    .button.primary:hover { background: #6b95cf; }
+    .button.ghost { background: transparent; }
+    .content { padding: 22px; }
+    .page { display: none; opacity: 0; transform: translateY(6px); }
+    .page.active { display: block; animation: page-in .24s ease forwards; }
+    @keyframes page-in { to { opacity: 1; transform: none; } }
+    .page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 20px; }
+    .eyebrow { margin: 0 0 7px; color: var(--accent); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 26px; margin-bottom: 7px; letter-spacing: -.02em; }
+    h2 { font-size: 18px; margin-bottom: 6px; }
+    h3 { font-size: 14px; margin-bottom: 8px; }
+    .subtitle { color: var(--muted); line-height: 1.6; max-width: 720px; margin-bottom: 0; }
+    .status-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .badge.blue { border-color: #37577d; background: var(--accent-soft); color: #b9d2f3; }
+    .badge.green { border-color: #2c684f; background: #132a22; color: #86d2b3; }
+    .badge.yellow { border-color: #66552c; background: #292416; color: #e1c77e; }
+    .badge.red { border-color: #6c3e40; background: #2d191c; color: #e8a1a1; }
+    .layout-evidence { display: grid; grid-template-columns: minmax(0, 1fr) var(--evidence); gap: 16px; align-items: start; }
+    .stack { display: grid; gap: 16px; }
+    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+    .panel-head { padding: 15px 16px; border-bottom: 1px solid var(--line-soft); display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .panel-title { font-weight: 700; }
+    .panel-sub { color: var(--faint); font-size: 11px; margin-top: 3px; }
+    .panel-body { padding: 16px; }
+    .decision-strip { display: grid; grid-template-columns: 1.25fr .8fr .8fr 1.2fr; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); margin-bottom: 16px; }
+    .decision-cell { min-height: 108px; padding: 16px; border-right: 1px solid var(--line-soft); }
+    .decision-cell:last-child { border-right: 0; }
+    .label { color: var(--faint); font-size: 11px; margin-bottom: 10px; }
+    .decision-main { font-size: 27px; font-weight: 750; color: #cfe1f7; }
+    .metric { font-size: 22px; font-weight: 700; }
+    .metric-note { color: var(--muted); font-size: 11px; margin-top: 7px; }
+    .branch-grid { display: grid; grid-template-columns: 1.25fr .95fr; gap: 16px; }
+    .branch-list { display: grid; }
+    .branch-row { display: grid; grid-template-columns: 116px minmax(0, 1fr) 76px; gap: 14px; align-items: center; padding: 15px 0; border-bottom: 1px solid var(--line-soft); }
+    .branch-row:last-child { border-bottom: 0; }
+    .branch-name { font-weight: 700; }
+    .branch-copy { color: var(--muted); line-height: 1.55; }
+    .branch-score { text-align: right; color: var(--accent); }
+    .insight-list { display: grid; gap: 12px; }
+    .insight { padding-left: 12px; border-left: 2px solid var(--line); }
+    .insight strong { display: block; margin-bottom: 4px; }
+    .insight span { color: var(--muted); line-height: 1.45; font-size: 12px; }
+    .evidence-panel { position: sticky; top: 82px; }
+    .evidence-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+    .evidence-stat { padding: 10px; background: var(--surface-2); border-radius: 8px; }
+    .evidence-stat .number { font-size: 17px; font-weight: 700; display: block; margin-top: 3px; }
+    .evidence-list { display: grid; gap: 0; }
+    .evidence-item { padding: 12px 0; border-bottom: 1px solid var(--line-soft); }
+    .evidence-item:last-child { border-bottom: 0; }
+    .evidence-top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; }
+    .evidence-source { font-weight: 650; }
+    .evidence-type { color: var(--accent); font-size: 10px; }
+    .evidence-meta { color: var(--faint); font-size: 11px; line-height: 1.5; }
+    .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+    .field-grid.three { grid-template-columns: repeat(3, minmax(0,1fr)); }
+    .field { display: grid; gap: 7px; }
+    .field label { color: #c4ced9; font-size: 12px; font-weight: 600; }
+    .field small { color: var(--faint); line-height: 1.45; }
+    .input { width: 100%; border: 1px solid var(--line); background: #0f151d; color: var(--text); border-radius: var(--control-radius); padding: 10px 11px; }
+    textarea.input { min-height: 112px; resize: vertical; }
+    .form-section { padding: 16px 0; border-bottom: 1px solid var(--line-soft); }
+    .form-section:first-child { padding-top: 0; }
+    .form-section:last-child { border-bottom: 0; padding-bottom: 0; }
+    .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+    .workflow-wrap { display: grid; gap: 14px; }
+    .workflow-line { display: grid; grid-template-columns: 154px minmax(0,1fr); gap: 14px; align-items: stretch; }
+    .workflow-label { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 14px; display: flex; flex-direction: column; justify-content: space-between; }
+    .workflow-label strong { font-size: 14px; }
+    .workflow-label span { color: var(--faint); font-size: 11px; }
+    .node-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+    .node-grid.five { grid-template-columns: repeat(5,minmax(0,1fr)); }
+    .node { position: relative; min-height: 92px; padding: 13px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface); }
+    .node.running { border-color: #5277a8; background: #152235; }
+    .node.complete { border-color: #315e4b; }
+    .node.waiting { opacity: .64; }
+    .node-name { font-weight: 700; margin-bottom: 7px; }
+    .node-desc { color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .node-status { margin-top: 10px; color: var(--faint); font-size: 10px; }
+    .node-progress-track { position: absolute; left: 12px; right: 12px; bottom: 10px; height: 7px; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: #0b1017; box-shadow: inset 0 0 0 1px rgba(0,0,0,.2); }
+    .node-progress-fill { width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .45s ease, background .25s ease; box-shadow: 0 0 9px currentColor; }
+    .node.complete .node-progress-fill { width: 100%; background: var(--positive); }
+    .node.degraded .node-progress-fill { width: 100%; background: var(--warning); }
+    .node.failed .node-progress-fill { width: 100%; background: var(--negative); }
+    .node.running .node-progress-fill { width: 62%; background: var(--accent); animation: progress-pulse 1.35s ease-in-out infinite; }
+    .node-error { display: none; margin-top: 8px; color: #e8a1a1; font-size: 10px; line-height: 1.4; }
+    .node.failed .node-error { display: block; }
+    .node.running::after { content: ""; position: absolute; inset: -1px; border: 1px solid var(--accent); border-radius: inherit; animation: node-pulse 1.8s ease infinite; pointer-events: none; }
+    @keyframes node-pulse { 0%,100% { opacity:.12; } 50% { opacity:.62; } }
+    @keyframes progress-pulse { 0%,100% { transform: translateX(-18%); opacity: .65; } 50% { transform: translateX(58%); opacity: 1; } }
+    .decision-flow { display: grid; grid-template-columns: 1.3fr .9fr .9fr 1fr; gap: 10px; }
+    .loop-note { margin-top: 10px; padding: 10px 12px; border-left: 2px solid var(--warning); color: #d6c89f; background: #211e15; font-size: 12px; }
+    .tabs { display: flex; gap: 4px; padding: 4px; background: #0f151d; border: 1px solid var(--line); border-radius: 9px; }
+    .tab { border: 0; background: transparent; color: var(--muted); padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+    .tab.active { background: var(--surface-3); color: var(--text); }
+    .market-tools { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+    .tool-group { display: grid; gap: 6px; }
+    .tool-group > span { color: var(--faint); font-size: 10px; }
+    .segmented { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+    .segment { border: 0; border-right: 1px solid var(--line); background: #0f151d; color: var(--muted); padding: 7px 10px; cursor: pointer; }
+    .segment:last-child { border-right: 0; }
+    .segment.active { background: var(--accent-soft); color: #c4daf7; }
+    .chart-stage { height: 430px; position: relative; display: grid; place-items: center; background-color: #0f151d; background-image: linear-gradient(var(--line-soft) 1px, transparent 1px), linear-gradient(90deg, var(--line-soft) 1px, transparent 1px); background-size: 100% 54px, 92px 100%; }
+    .chart-empty { width: 440px; padding: 25px; text-align: center; background: rgba(18,24,33,.94); border: 1px solid var(--line); border-radius: var(--radius); }
+    .chart-empty strong { display: block; font-size: 17px; margin-bottom: 8px; }
+    .chart-empty p { color: var(--muted); line-height: 1.55; margin-bottom: 15px; }
+    .contract { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: left; }
+    .contract-item { padding: 9px; border: 1px solid var(--line-soft); border-radius: 7px; }
+    .contract-item span { display: block; color: var(--faint); font-size: 10px; margin-bottom: 4px; }
+    .contract-item code { color: #b9d2f3; font-size: 11px; }
+    .report-hero { display: grid; grid-template-columns: 1.2fr .85fr .85fr; gap: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; margin-bottom: 16px; }
+    .report-hero > div { padding: 18px; background: var(--surface); border-right: 1px solid var(--line-soft); }
+    .report-hero > div:last-child { border-right: 0; }
+    .report-rating { font-size: 30px; font-weight: 750; color: #cfe1f7; }
+    .report-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .report-section { padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
+    .report-live { white-space: pre-wrap; word-break: break-word; max-height: 680px; overflow: auto; color: #d9e2ec; line-height: 1.7; font-size: 13px; }
+    .report-section:last-child { border-bottom: 0; }
+    .report-section p { color: var(--muted); line-height: 1.7; margin-bottom: 0; }
+    .bullet-list { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.7; }
+    .table-wrap { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); }
+    table { width: 100%; border-collapse: collapse; background: var(--surface); }
+    th { text-align: left; color: var(--faint); font-size: 10px; letter-spacing: .04em; padding: 11px 14px; border-bottom: 1px solid var(--line); background: #101720; }
+    td { padding: 13px 14px; border-bottom: 1px solid var(--line-soft); color: #c8d2dd; }
+    tr:last-child td { border-bottom: 0; }
+    tr:hover td { background: #151e29; }
+    .table-action { border: 0; background: transparent; color: #9abce8; cursor: pointer; padding: 3px 0; }
+    .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; min-width: 280px; padding: 13px 15px; border: 1px solid #46698f; border-radius: 9px; background: #172437; color: #dce9f8; box-shadow: 0 18px 40px rgba(5,9,14,.42); opacity: 0; transform: translateY(10px); pointer-events: none; transition: .22s ease; }
+    .toast.show { opacity: 1; transform: none; }
+    .small { font-size: 11px; color: var(--faint); }
+    .hidden { display: none !important; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-name"><span class="brand-mark">AI</span><span>智能投研终端</span></div>
+        <div class="brand-sub">多智能体研究与决策工作台</div>
+      </div>
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-button active" data-page="workspace"><span>研究工作台</span><span class="nav-index mono">01</span></button>
+        <button class="nav-button" data-page="analysis"><span>新建分析</span><span class="nav-index mono">02</span></button>
+        <button class="nav-button" data-page="workflow"><span>运行任务</span><span class="nav-index mono">03</span></button>
+        <button class="nav-button" data-page="market"><span>行情视图</span><span class="nav-index mono">04</span></button>
+        <button class="nav-button" data-page="report"><span>研究报告</span><span class="nav-index mono">05</span></button>
+        <button class="nav-button" data-page="history"><span>历史记录</span><span class="nav-index mono">06</span></button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="demo-label">在线评审版本</div>
+        <div>当前数据均为界面演示</div>
+        <div>不构成投资建议</div>
+      </div>
+    </aside>
+
+    <div class="shell">
+      <header class="command-bar">
+        <div class="symbol-box"><div class="symbol-code mono">AAPL</div><div class="symbol-name">Apple Inc.</div></div>
+        <select class="command-control" aria-label="所属行业"><option>通信设备</option><option>消费电子</option><option>人工智能</option></select>
+        <input class="command-control date" type="date" value="2026-07-22" aria-label="分析日期">
+        <select class="command-control" aria-label="投资周期"><option>短期</option><option selected>中期</option><option>长期</option></select>
+        <div class="command-spacer"></div>
+        <span class="badge yellow">演示数据</span>
+        <button class="button primary" id="startResearch">启动研究</button>
+      </header>
+
+      <main class="content">
+        <section class="page active" id="page-workspace">
+          <div class="page-head">
+            <div><p class="eyebrow">Research workspace</p><h1>研究工作台</h1><p class="subtitle">在一个视图中检查当前研究对象、证据新鲜度、分析链进度和最终决策。</p></div>
+            <div class="status-row"><span class="badge green">研究完成</span><span class="badge">最近更新 14:32</span></div>
+          </div>
+          <div class="decision-strip">
+            <div class="decision-cell"><div class="label">综合投资评级</div><div class="decision-main">审慎增持</div><div class="metric-note">中期视角，等待技术面确认</div></div>
+            <div class="decision-cell"><div class="label">研究置信度</div><div class="metric">78%</div><div class="metric-note">证据一致性良好</div></div>
+            <div class="decision-cell"><div class="label">合理价值区间</div><div class="metric">315-420</div><div class="metric-note">行业模型演示值</div></div>
+            <div class="decision-cell"><div class="label">当前主要约束</div><div style="font-weight:700;line-height:1.45">行情接口尚未接入</div><div class="metric-note">技术形态节点保留页面契约</div></div>
+          </div>
+          <div class="layout-evidence">
+            <div class="stack">
+              <div class="panel">
+                <div class="panel-head"><div><div class="panel-title">三条研究链</div><div class="panel-sub">结论、依据和冲突信号集中展示</div></div><span class="badge blue">3 / 3 完成</span></div>
+                <div class="panel-body branch-list">
+                  <div class="branch-row"><div class="branch-name">行业研究</div><div class="branch-copy">海外上游资本开支保持增长，通信占比提升，政策影响偏积极。</div><div class="branch-score mono">+0.74</div></div>
+                  <div class="branch-row"><div class="branch-name">个股研究</div><div class="branch-copy">公司业务稳定，盈利预期改善，但估值对增长兑现要求较高。</div><div class="branch-score mono">+0.61</div></div>
+                  <div class="branch-row"><div class="branch-name">市场研究</div><div class="branch-copy">大盘风险偏好中性，板块相对强度改善，情绪尚未过热。</div><div class="branch-score mono">+0.42</div></div>
+                </div>
+              </div>
+              <div class="branch-grid">
+                <div class="panel"><div class="panel-head"><div class="panel-title">行业资本开支摘要</div><button class="button ghost" data-goto="workflow">查看完整链路</button></div><div class="panel-body insight-list">
+                  <div class="insight"><strong>海外资本开支趋势</strong><span>英伟达、谷歌、亚马逊等上游企业仍是主要观察对象。</span></div>
+                  <div class="insight"><strong>未来两年预测</strong><span>通信相关投入延续增长，但增速可能逐步回归常态。</span></div>
+                  <div class="insight"><strong>价值测算</strong><span>按可触达比例 35%-40%、净利率 30%、PE 30-35 倍计算。</span></div>
+                </div></div>
+                <div class="panel"><div class="panel-head"><div class="panel-title">风险与反方证据</div><span class="badge yellow">2 项待跟踪</span></div><div class="panel-body insight-list">
+                  <div class="insight"><strong>估值敏感性</strong><span>盈利增速低于预期时，合理估值区间将明显下移。</span></div>
+                  <div class="insight"><strong>数据完整度</strong><span>技术面结论等待真实 K线和成交量数据补充。</span></div>
+                </div></div>
+              </div>
+            </div>
+            <aside class="panel evidence-panel">
+              <div class="panel-head"><div><div class="panel-title">证据与数据来源</div><div class="panel-sub">每条结论均保留来源路径</div></div></div>
+              <div class="panel-body">
+                <div class="evidence-summary"><div class="evidence-stat"><span class="small">数据库命中</span><span class="number">18</span></div><div class="evidence-stat"><span class="small">外部补充</span><span class="number">07</span></div></div>
+                <div class="evidence-list">
+                  <div class="evidence-item"><div class="evidence-top"><span class="evidence-source">公司基础资料</span><span class="evidence-type">DATABASE</span></div><div class="evidence-meta">本地数据库命中，结构化字段完整<br>更新于 2026-07-22 14:28</div></div>
+                  <div class="evidence-item"><div class="evidence-top"><span class="evidence-source">海外资本开支资料</span><span class="evidence-type">CRAWLER</span></div><div class="evidence-meta">演示抓取记录，来源待正式接入<br>可信度 0.82</div></div>
+                  <div class="evidence-item"><div class="evidence-top"><span class="evidence-source">政策影响解释</span><span class="evidence-type">LLM</span></div><div class="evidence-meta">基于政策摘要生成，需人工复核<br>可信度 0.76</div></div>
+                  <div class="evidence-item"><div class="evidence-top"><span class="evidence-source">K线与技术指标</span><span class="evidence-type">MARKET</span></div><div class="evidence-meta">接口待接入，当前不输出技术结论</div></div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="page" id="page-analysis">
+          <div class="page-head"><div><p class="eyebrow">New research</p><h1>新建分析</h1><p class="subtitle">配置研究标的、行业研报和估值假设，提交后进入多智能体执行视图。</p></div><span class="badge blue">预计 14 个研究节点</span></div>
+          <div class="layout-evidence">
+            <form class="panel" id="analysisForm">
+              <div class="panel-head"><div><div class="panel-title">研究参数</div><div class="panel-sub">所有字段均为评审交互演示</div></div></div>
+              <div class="panel-body">
+                <div class="form-section"><h3>基础信息</h3><div class="field-grid">
+                  <div class="field"><label for="symbol">股票代码</label><input class="input mono" id="symbol" name="symbol" value="AAPL" required><small>提交时自动转为大写格式</small></div>
+                  <div class="field"><label for="industry">所属行业</label><input class="input" id="industry" name="industry" value="通信设备"><small>支持自动识别后人工修正</small></div>
+                  <div class="field"><label for="analysisDate">分析日期</label><input class="input" id="analysisDate" name="analysisDate" type="date" value="2026-07-22"></div>
+                  <div class="field"><label for="horizon">投资周期</label><select class="input" id="horizon" name="horizon"><option>短期</option><option selected>中期</option><option>长期</option></select></div>
+                </div></div>
+                <div class="form-section"><h3>行业研报</h3><div class="field"><label for="reportText">研报原文或研究要求</label><textarea class="input" id="reportText">重点分析海外上游资本开支、通信投入占比、政策影响和未来两年行业价值。</textarea><small>正式版本将支持文件上传、文本粘贴和来源记录</small></div></div>
+                <div class="form-section"><h3>价值测算假设</h3><div class="field-grid three">
+                  <div class="field"><label for="share">A股可触达比例</label><input class="input mono" id="share" value="35%-40%"></div>
+                  <div class="field"><label for="margin">预计净利率</label><input class="input mono" id="margin" value="30%"></div>
+                  <div class="field"><label for="pe">合理 PE 区间</label><input class="input mono" id="pe" value="30-35"></div>
+                </div></div>
+                <div class="form-actions"><button class="button" type="reset">恢复默认</button><button class="button primary" type="submit">创建研究任务</button></div>
+              </div>
+            </form>
+            <aside class="stack">
+              <div class="panel"><div class="panel-head"><div class="panel-title">执行计划</div></div><div class="panel-body insight-list">
+                <div class="insight"><strong>准备数据</strong><span>查询数据库，没有结果时调用抓取与 LLM 补充。</span></div>
+                <div class="insight"><strong>并行研究</strong><span>行业、个股和市场三个分支同时执行。</span></div>
+                <div class="insight"><strong>形成决策</strong><span>完成综合研究、买卖判断和证据校验。</span></div>
+                <div class="insight"><strong>生成报告</strong><span>校验通过后输出 Markdown 报告。</span></div>
+              </div></div>
+              <div class="panel"><div class="panel-head"><div class="panel-title">数据策略</div></div><div class="panel-body"><div class="status-row"><span class="badge green">数据库优先</span><span class="badge blue">自动抓取</span><span class="badge yellow">LLM 补充</span></div><p class="subtitle" style="margin-top:12px">页面会明确区分每种数据来源，不把 LLM 生成内容伪装成数据库事实。</p></div></div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="page" id="page-workflow">
+          <div class="page-head"><div><p class="eyebrow">Live task</p><h1>运行任务</h1><p class="subtitle">正在从分析服务读取任务状态和证据一致性校验进度。</p></div><div class="status-row"><span class="badge blue" id="workflowStatus">加载中</span><button class="button" id="advanceWorkflow">刷新任务状态</button></div></div>
+          <div class="workflow-wrap">
+            <div class="workflow-line"><div class="workflow-label"><strong>数据准备</strong><span>数据库与外部补充</span></div><div class="node-grid three"><div class="node complete"><div class="node-name">数据库查询</div><div class="node-desc">公司资料与历史研报命中</div><div class="node-status">完成 18 条</div></div><div class="node complete"><div class="node-name">自动抓取</div><div class="node-desc">补充海外资本开支资料</div><div class="node-status">完成 7 条</div></div><div class="node complete"><div class="node-name">LLM 信息补全</div><div class="node-desc">解释缺失政策语义</div><div class="node-status">完成，需复核</div></div></div></div>
+            <div class="workflow-line"><div class="workflow-label"><strong>行业研究</strong><span>资本开支与价值</span></div><div class="node-grid five"><div class="node complete"><div class="node-name">研报解析</div><div class="node-desc">提取近 3-5 年资本开支</div></div><div class="node complete"><div class="node-name">上游资本开支</div><div class="node-desc">识别增长与占比变化</div></div><div class="node complete"><div class="node-name">政策影响</div><div class="node-desc">判断方向与力度</div></div><div class="node complete"><div class="node-name">未来资本开支</div><div class="node-desc">预测明年和后年</div></div><div class="node complete"><div class="node-name">行业价值</div><div class="node-desc">收入、利润与市值区间</div></div></div></div>
+            <div class="workflow-line"><div class="workflow-label"><strong>个股研究</strong><span>业务、盈利与技术</span></div><div class="node-grid three"><div class="node complete"><div class="node-name">公司业务理解</div><div class="node-desc">收入结构与竞争边界</div></div><div class="node complete"><div class="node-name">盈利与边际变化</div><div class="node-desc">预测盈利拐点和质量</div></div><div class="node waiting"><div class="node-name">技术形态</div><div class="node-desc">等待 K线行情接口接入</div><div class="node-status">接口已预留</div></div></div></div>
+            <div class="workflow-line"><div class="workflow-label"><strong>市场研究</strong><span>大盘、板块与情绪</span></div><div class="node-grid three"><div class="node complete"><div class="node-name">大盘指数</div><div class="node-desc">风险偏好与趋势环境</div></div><div class="node complete"><div class="node-name">板块形态</div><div class="node-desc">相对强弱与资金方向</div></div><div class="node complete"><div class="node-name">市场情绪</div><div class="node-desc">拥挤度与过热风险</div></div></div></div>
+            <div class="panel"><div class="panel-head"><div class="panel-title">综合决策链</div><span class="small">结论生成后仍需证据校验</span></div><div class="panel-body"><div class="decision-flow"><div class="node complete"><div class="node-name">综合研究汇总</div><div class="node-desc">统一三个分支的结论尺度</div></div><div class="node complete"><div class="node-name">买卖点决策</div><div class="node-desc">审慎增持</div></div><div class="node running"><div class="node-name">一致性校验</div><div class="node-desc">检查证据冲突与缺口</div></div><div class="node waiting"><div class="node-name">Markdown 报告</div><div class="node-desc">校验通过后生成</div></div></div><div class="loop-note">若证据不足，任务会返回研究规划节点补充信息，不直接输出未经验证的交易结论。</div></div></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-market">
+          <div class="page-head"><div><p class="eyebrow">Market interface</p><h1>行情视图</h1><p class="subtitle">保留完整 K线输入、筛选和展示契约，正式开发阶段接入真实行情服务。</p></div><span class="badge yellow">接口待接入</span></div>
+          <div class="panel">
+            <div class="panel-head"><div class="market-tools">
+              <div class="tool-group"><span>证券代码</span><strong class="mono">AAPL</strong></div>
+              <div class="tool-group"><span>周期</span><div class="segmented" data-segmented><button class="segment active">日线</button><button class="segment">周线</button><button class="segment">月线</button></div></div>
+              <div class="tool-group"><span>复权</span><div class="segmented" data-segmented><button class="segment">不复权</button><button class="segment active">前复权</button><button class="segment">后复权</button></div></div>
+              <div class="tool-group"><span>技术指标</span><div class="segmented" data-segmented><button class="segment active">MA</button><button class="segment active">MACD</button><button class="segment">RSI</button><button class="segment active">成交量</button></div></div>
+            </div><div class="small">更新时间：等待数据源</div></div>
+            <div class="chart-stage"><div class="chart-empty"><strong>行情接口待接入，页面契约已就绪</strong><p>当前不展示虚构 K线。后续只需实现数据适配器，即可复用本页面和个股技术形态节点。</p><div class="contract"><div class="contract-item"><span>请求类型</span><code>MarketChartRequest</code></div><div class="contract-item"><span>返回类型</span><code>MarketChartResponse</code></div><div class="contract-item"><span>核心数据</span><code>OHLCV bars[]</code></div><div class="contract-item"><span>适配接口</span><code>MarketChartAdapter.load()</code></div></div></div></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-report">
+          <div class="page-head"><div><p class="eyebrow">Research report</p><h1>研究报告</h1><p class="subtitle">结论先行，同时保留假设、反方证据和每条数据的来源路径。</p></div><div class="status-row"><button class="button">预览 Markdown</button><button class="button primary" id="downloadReport">下载报告</button></div></div>
+          <div class="report-hero"><div><div class="label">综合投资评级</div><div class="report-rating">审慎增持</div><div class="metric-note">演示结论，不构成投资建议</div></div><div><div class="label">置信度</div><div class="metric">78%</div><div class="metric-note">一致性校验通过</div></div><div><div class="label">投资周期</div><div class="metric">中期</div><div class="metric-note">3-12 个月</div></div></div>
+          <div class="report-columns">
+            <div class="panel"><div class="panel-head"><div class="panel-title">核心逻辑</div></div><div class="panel-body">
+              <div class="report-section"><h3>行业判断</h3><p>海外上游企业的资本开支仍具韧性，通信相关投入占比预计保持稳定或小幅提升。</p></div>
+              <div class="report-section"><h3>公司判断</h3><p>公司业务质量稳定，盈利能力具备支撑，但估值需要增长兑现和现金流改善共同验证。</p></div>
+              <div class="report-section"><h3>市场判断</h3><p>板块相对强度改善，市场情绪处于中性区域，暂未形成明显拥挤交易。</p></div>
+            </div></div>
+            <div class="stack">
+              <div class="panel"><div class="panel-head"><div class="panel-title">行业价值测算</div><span class="badge yellow">演示参数</span></div><div class="panel-body"><div class="field-grid three"><div><div class="label">可触达收入</div><div class="metric">35-40</div></div><div><div class="label">预计净利润</div><div class="metric">10.5-12</div></div><div><div class="label">合理市值</div><div class="metric">315-420</div></div></div><p class="small" style="margin-top:14px">单位以正式数据接口定义为准，当前仅验证页面信息结构。</p></div></div>
+              <div class="panel"><div class="panel-head"><div class="panel-title">风险因素</div></div><div class="panel-body"><ul class="bullet-list"><li>上游资本开支增速弱于预期</li><li>政策落地力度低于模型假设</li><li>行情数据缺失导致技术结论不完整</li><li>估值中枢受风险偏好变化影响</li></ul></div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="page-history">
+          <div class="page-head"><div><p class="eyebrow">Research archive</p><h1>历史记录</h1><p class="subtitle">查询过去的研究任务、决策结果和报告状态，并使用相同参数重新运行。</p></div><button class="button primary" data-goto="analysis">新建分析</button></div>
+          <div class="panel" style="margin-bottom:14px"><div class="panel-body"><div class="field-grid three"><div class="field"><label for="filterSymbol">股票代码</label><input class="input mono" id="filterSymbol" placeholder="输入代码"></div><div class="field"><label for="filterRating">投资评级</label><select class="input" id="filterRating"><option>全部评级</option><option>审慎增持</option><option>中性观察</option></select></div><div class="field"><label for="filterStatus">任务状态</label><select class="input" id="filterStatus"><option>全部状态</option><option>已完成</option><option>待补充</option></select></div></div></div></div>
+          <div class="table-wrap"><table><thead><tr><th>股票代码</th><th>所属行业</th><th>分析日期</th><th>投资周期</th><th>评级</th><th>任务状态</th><th>操作</th></tr></thead><tbody>
+            <tr><td class="mono">AAPL</td><td>通信设备</td><td class="mono">2026-07-22</td><td>中期</td><td><span class="badge green">审慎增持</span></td><td>已完成</td><td><button class="table-action" data-goto="report">查看报告</button></td></tr>
+            <tr><td class="mono">NVDA</td><td>人工智能</td><td class="mono">2026-07-18</td><td>长期</td><td><span class="badge blue">中性观察</span></td><td>已完成</td><td><button class="table-action" data-goto="report">查看报告</button></td></tr>
+            <tr><td class="mono">AMZN</td><td>云计算</td><td class="mono">2026-07-15</td><td>中期</td><td><span class="badge yellow">待补充</span></td><td>证据不足</td><td><button class="table-action" data-goto="workflow">继续任务</button></td></tr>
+          </tbody></table></div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module">
+    import { createApiClient, ApiClientError } from './api-client.mjs';
+    import { navigateTo, routeFromLocation } from './router.mjs';
+    const api = createApiClient();
+    const appState = { runId: routeFromLocation().runId };
+    const pages = [...document.querySelectorAll('.page')];
+    const navButtons = [...document.querySelectorAll('.nav-button')];
+    const toast = document.getElementById('toast');
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add('show');
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 2400);
+    }
+    function openPage(name, runId = appState.runId, syncHistory = true) {
+      appState.runId = runId;
+      pages.forEach(page => page.classList.toggle('active', page.id === `page-${name}`));
+      navButtons.forEach(button => button.classList.toggle('active', button.dataset.page === name));
+      if (syncHistory) navigateTo(name, runId);
+      if (name === 'report') loadReport(runId);
+      if (name === 'workflow') loadWorkflow(runId);
+      window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    }
+    function showApiError(error) {
+      showToast(error instanceof ApiClientError ? error.message : '分析服务请求失败，请稍后重试。');
+    }
+    function setText(selector, value) {
+      const element = document.querySelector(selector);
+      if (element) element.textContent = value ?? '—';
+    }
+    function horizonValue(value) {
+      return { 短期: 'short', 中期: 'medium', 长期: 'long' }[value] || 'medium';
+    }
+    async function loadHistory() {
+      try {
+        const page = await api.listRuns({ limit: 20 });
+        const body = document.querySelector('#page-history tbody');
+        if (!body) return;
+        body.replaceChildren();
+        if (!page.items.length) {
+          body.innerHTML = '<tr><td colspan="7">暂无历史运行记录。</td></tr>';
+          return;
+        }
+        for (const run of page.items) {
+          const row = document.createElement('tr');
+          row.innerHTML = `<td class="mono">${run.ticker}</td><td>${run.industry_name || '—'}</td><td class="mono">${run.as_of_date}</td><td>${run.investment_horizon}</td><td><span class="badge blue">${run.status}</span></td><td>${run.status}</td><td><button class="table-action" data-run-id="${run.run_id}" data-goto="workflow">查看任务</button></td>`;
+          body.append(row);
+        }
+        body.querySelectorAll('[data-run-id]').forEach(button => button.addEventListener('click', () => openPage(button.dataset.goto, button.dataset.runId)));
+      } catch (error) { showApiError(error); }
+    }
+    async function loadWorkflow(runId = appState.runId) {
+      if (!runId) return;
+      try {
+        const [run, nodes] = await Promise.all([api.getRun(runId), api.getNodes(runId)]);
+        setText('#page-workflow h1 + .subtitle', `${run.ticker} ${run.investment_horizon} 研究任务正在执行。`);
+        setText('#workflowStatus', run.status);
+        const nodeElements = [...document.querySelectorAll('#page-workflow .node')];
+        nodeElements.forEach(element => {
+          if (!element.querySelector('.node-progress-track')) {
+            element.insertAdjacentHTML('beforeend', '<div class="node-progress-track" aria-hidden="true"><div class="node-progress-fill"></div></div><div class="node-error"></div>');
+          }
+        });
+        nodes.items.slice(0, nodeElements.length).forEach((node, index) => {
+          const element = nodeElements[index];
+          element.classList.toggle('complete', node.status === 'completed');
+          element.classList.toggle('running', node.status === 'running');
+          element.classList.toggle('degraded', node.status === 'degraded' || node.status === 'skipped');
+          element.classList.toggle('failed', node.status === 'failed');
+          element.classList.toggle('waiting', node.status === 'pending' || node.status === 'skipped');
+          const status = nodeElements[index].querySelector('.node-status');
+          if (status) status.textContent = node.status === 'completed' ? '已完成' : node.status === 'degraded' ? '部分完成' : node.status === 'failed' ? '失败' : node.status;
+          const error = element.querySelector('.node-error');
+          if (error) error.textContent = node.error_summary || '';
+        });
+        if (runId === appState.runId && !['completed', 'degraded', 'failed', 'interrupted'].includes(run.status)) {
+          window.clearTimeout(loadWorkflow.timer);
+          loadWorkflow.timer = window.setTimeout(() => loadWorkflow(runId), 1800);
+        }
+      } catch (error) { showApiError(error); }
+    }
+    async function loadReport(runId = appState.runId) {
+      try {
+        if (!runId) {
+          const page = await api.listRuns({ limit: 1 });
+          runId = page.items[0]?.run_id;
+          if (runId) appState.runId = runId;
+        }
+        if (!runId) { showToast('请先选择一条研究任务，再查看报告。'); return; }
+        const report = await api.getReport(runId);
+        const panel = document.querySelector('#page-report .report-columns .panel .panel-body');
+        if (panel) { panel.classList.add('report-live'); panel.textContent = report.report_markdown; }
+      } catch (error) { showApiError(error); }
+    }
+    async function loadMarket() {
+      const ticker = document.querySelector('#page-market .tool-group strong')?.textContent?.trim() || 'AAPL';
+      try {
+        const bars = await api.getMarketBars({ ticker });
+        const empty = document.querySelector('#page-market .chart-empty');
+        if (empty) empty.querySelector('strong').textContent = bars.items.length ? `已加载 ${bars.items.length} 条行情数据` : '暂无行情数据';
+      } catch (error) { showApiError(error); }
+    }
+    navButtons.forEach(button => button.addEventListener('click', () => openPage(button.dataset.page)));
+    document.querySelectorAll('[data-goto]').forEach(button => button.addEventListener('click', () => openPage(button.dataset.goto, button.dataset.runId || appState.runId)));
+    document.getElementById('startResearch').addEventListener('click', async () => {
+      try { const page = await api.listRuns({ limit: 1 }); const latest = page.items[0]; openPage('workflow', latest?.run_id); await loadWorkflow(latest?.run_id); }
+      catch (error) { showApiError(error); }
+    });
+    document.getElementById('analysisForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      try {
+        const accepted = await api.createRun({ ticker: form.get('symbol'), industry_name: form.get('industry'), as_of_date: form.get('analysisDate'), investment_horizon: horizonValue(form.get('horizon')), task_type: 'full', offline: false });
+        appState.runId = accepted.run_id;
+        openPage('workflow', accepted.run_id);
+        showToast('研究任务已创建，正在进入多智能体分析。');
+        await loadWorkflow(accepted.run_id);
+      } catch (error) { showApiError(error); }
+    });
+    document.querySelectorAll('[data-segmented]').forEach(group => group.addEventListener('click', event => {
+      if (!event.target.classList.contains('segment')) return;
+      if (group.closest('.tool-group')?.querySelector('span')?.textContent === '技术指标') event.target.classList.toggle('active');
+      else { group.querySelectorAll('.segment').forEach(item => item.classList.remove('active')); event.target.classList.add('active'); }
+    }));
+    document.getElementById('advanceWorkflow').addEventListener('click', () => loadWorkflow());
+    document.getElementById('downloadReport').addEventListener('click', async () => {
+      try {
+        let runId = appState.runId;
+        if (!runId) { const page = await api.listRuns({ limit: 1 }); runId = page.items[0]?.run_id; }
+        if (!runId) { showToast('没有可下载的研究报告。'); return; }
+        const report = await api.getReport(runId);
+        const blob = new Blob([report.report_markdown], { type: 'text/markdown;charset=utf-8' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${runId}.md`; link.click(); URL.revokeObjectURL(link.href);
+      }
+      catch (error) { showApiError(error); }
+    });
+    window.addEventListener('popstate', () => { const route = routeFromLocation(); appState.runId = route.runId; openPage(route.page, route.runId, false); });
+    const initialRoute = routeFromLocation();
+    openPage(initialRoute.page, initialRoute.runId, false);
+    loadHistory();
+    if (initialRoute.page === 'workflow') loadWorkflow(initialRoute.runId);
+    if (initialRoute.page === 'report') loadReport(initialRoute.runId);
+    if (initialRoute.page === 'market') loadMarket();
+  </script>
+</body>
+</html>

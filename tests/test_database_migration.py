@@ -49,3 +49,23 @@ def test_interactive_cli_cache_migration_is_additive_and_indexed():
     assert "create table if not exists provider_response_cache" in sql
     assert "add column if not exists external_ids_json" in sql
     assert "idx_provider_cache_lookup" in sql
+
+
+def test_web_api_migration_extends_analysis_lifecycle():
+    sql = Path("database/migrations/004_web_analysis_api.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+    assert "add column if not exists task_type" in sql
+    assert "add column if not exists error_code" in sql
+    assert "add column if not exists error_summary" in sql
+    assert "'degraded'" in sql
+    assert "'interrupted'" in sql
+    assert "idx_analysis_runs_web_history" in sql
+
+
+def test_web_api_migration_allows_degraded_node_runs():
+    sql = Path("database/migrations/005_degraded_node_runs.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+    assert "node_runs_status_check" in sql
+    assert "status in ('pending','running','completed','degraded','failed','skipped')" in sql

@@ -75,10 +75,15 @@ CREATE TABLE analysis_runs (
     industry_id UUID NOT NULL REFERENCES industries(id),
     as_of_date DATE NOT NULL,
     investment_horizon TEXT NOT NULL CHECK (investment_horizon IN ('short', 'medium', 'long')),
+    task_type TEXT NOT NULL DEFAULT 'full',
     user_request TEXT,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    status TEXT NOT NULL CONSTRAINT analysis_runs_status_check CHECK (
+        status IN ('pending', 'running', 'completed', 'degraded', 'failed', 'interrupted')
+    ),
     retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
     max_retries INTEGER NOT NULL DEFAULT 2 CHECK (max_retries >= 0),
+    error_code TEXT,
+    error_summary TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -554,3 +559,5 @@ CREATE INDEX idx_provider_fetch_run ON provider_fetch_runs (run_id, provider, da
 CREATE INDEX idx_metric_fact_lookup ON financial_metric_facts (entity_id, metric_key, fiscal_year DESC);
 CREATE INDEX idx_capex_forecast_run_year ON capex_forecasts (run_id, forecast_year);
 CREATE INDEX idx_profit_forecast_asof ON profit_forecasts (ticker, published_at, forecast_year);
+CREATE INDEX idx_analysis_runs_web_history
+    ON analysis_runs (created_at DESC, task_type, status, ticker);

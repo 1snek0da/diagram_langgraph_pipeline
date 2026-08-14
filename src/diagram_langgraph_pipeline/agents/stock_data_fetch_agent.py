@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from ..dependencies import AgentDependencies
+from ..routing import get_execution_plan
 
 
 def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
@@ -31,6 +32,9 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
     ticker = state["ticker"]
     benchmark_ticker = state.get("benchmark_ticker", "000300.SS")
     sector_ticker = state.get("sector_index_ticker", "")
+    enabled_nodes = set(
+        get_execution_plan(state.get("task_type", "full")).enabled_nodes
+    )
 
     stock = _fetch_with_coverage(
         deps,
@@ -53,7 +57,7 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
             technical_days,
             technical_history_days,
         )
-        if benchmark_ticker
+        if benchmark_ticker and "index_analysis" in enabled_nodes
         else None
     )
     sector = (
@@ -67,7 +71,7 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
             technical_days,
             technical_history_days,
         )
-        if sector_ticker
+        if sector_ticker and "sector_technical" in enabled_nodes
         else None
     )
     save_market_data = getattr(deps.repository, "save_market_data", None)

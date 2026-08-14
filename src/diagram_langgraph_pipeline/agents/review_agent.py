@@ -19,13 +19,45 @@ REQUIRED_RESULTS = {
     "decision_result": "缺少综合决策",
 }
 
+RESULT_NODES = {
+    "industry_report_result": "industry_report",
+    "upstream_capex_result": "upstream_capex",
+    "policy_result": "policy",
+    "future_capex_forecast_result": "future_capex_forecast",
+    "industry_valuation_result": "industry_valuation",
+    "business_result": "business",
+    "profit_forecast_result": "profit_forecast",
+    "marginal_change_result": "marginal_change",
+    "company_valuation_result": "company_valuation",
+    "stock_market_data_analysis": "stock_data_analysis",
+    "stock_technical_result": "stock_technical",
+    "index_analysis_result": "index_analysis",
+    "sector_technical_result": "sector_technical",
+    "sentiment_result": "sentiment",
+    "decision_result": "decision",
+}
+
 
 def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
-    missing = list(state.get("missing_items", []))
-    for key, message in REQUIRED_RESULTS.items():
+    task_type = state.get("task_type", "full")
+    required_outputs = tuple(
+        state.get("required_outputs", tuple(REQUIRED_RESULTS))
+    )
+    skipped_nodes = set(state.get("skipped_nodes", ()))
+    skipped_nodes.update(
+        node
+        for node, status in state.get("optional_node_statuses", {}).items()
+        if status.get("status") == "skipped"
+    )
+    missing = _scoped_missing_items(state, required_outputs, skipped_nodes)
+    missing_required: list[str] = []
+    for key in required_outputs:
         if not state.get(key):
-            missing.append(message)
-    if len(state.get("evidence_refs", [])) < 3:
+            missing_required.append(key)
+            missing.append(f"缺少必需结果：{key}")
+
+    evidence_required = task_type in {"full", "industry", "fundamental", "market"}
+    if evidence_required and len(state.get("evidence_refs", [])) < 3:
         missing.append("可追溯证据少于 3 条")
 
     coverage = (
@@ -38,24 +70,79 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
         .get("company_coverage", {})
         .get("coverage_ratio", 0.0)
     )
+    market_coverage_required = task_type in {"full", "technical"}
+    industry_coverage_required = task_type in {"full", "industry"}
+    coverage_gaps: list[tuple[str, str]] = []
+    if market_coverage_required and coverage < 0.8:
+        coverage_gaps.append(
+            ("stock_market_data_analysis", "个股市场数据覆盖率低于 0.8")
+        )
+    if industry_coverage_required and industry_coverage < 0.6:
+        coverage_gaps.append(
+            ("upstream_capex_result", "行业公司覆盖率低于 0.6")
+        )
+    missing.extend(message for _, message in coverage_gaps)
+
     completeness = max(0.0, 1.0 - len(set(missing)) * 0.08)
     evidence_score = min(1.0, len(state.get("evidence_refs", [])) / 6)
-    logic_score = (
-        0.9
-        if state.get("decision_result", {}).get("conflict_points") is not None
-        else 0.5
-    )
+    if task_type == "full":
+        logic_score = (
+            0.9
+            if state.get("decision_result", {}).get("conflict_points") is not None
+            else 0.5
+        )
+    else:
+        logic_score = 0.7
     retry_count = int(state.get("retry_count", 0))
     max_retries = int(state.get("max_retries", 2))
-    passed = (
-        completeness >= 0.75
-        and evidence_score >= 0.5
-        and coverage >= 0.8
-        and industry_coverage >= 0.6
-    )
+    has_required_results = not missing_required
+    if task_type == "technical":
+        passed = has_required_results and coverage >= 0.8
+    elif task_type == "industry":
+        passed = (
+            has_required_results
+            and evidence_score >= 0.5
+            and industry_coverage >= 0.6
+        )
+    elif task_type in {"fundamental", "market"}:
+        passed = has_required_results and evidence_score >= 0.5
+    else:
+        passed = (
+            has_required_results
+            and completeness >= 0.75
+            and evidence_score >= 0.5
+            and coverage >= 0.8
+            and industry_coverage >= 0.6
+        )
     needs_retry = not passed and retry_count < max_retries
     next_retry_count = retry_count + 1 if needs_retry else retry_count
     unique_missing = list(dict.fromkeys(missing))
+    retry_tasks: list[str | dict[str, Any]] = []
+    handled_messages: set[str] = set()
+    for key in missing_required:
+        reason = f"缺少必需结果：{key}"
+        handled_messages.add(reason)
+        node = RESULT_NODES.get(key)
+        if node is None:
+            retry_tasks.append(f"补采：{reason}")
+        elif node not in skipped_nodes:
+            retry_tasks.append(
+                {"node": node, "result_key": key, "reason": reason}
+            )
+    for result_key, reason in coverage_gaps:
+        handled_messages.add(reason)
+        node = RESULT_NODES[result_key]
+        if node not in skipped_nodes:
+            retry_tasks.append(
+                {"node": node, "result_key": result_key, "reason": reason}
+            )
+    retry_tasks.extend(
+        f"补采：{item}"
+        for item in unique_missing
+        if item not in handled_messages
+    )
+    if not needs_retry:
+        retry_tasks = []
     return {
         "retry_count": next_retry_count,
         "missing_items": unique_missing,
@@ -69,9 +156,43 @@ def run(state: dict[str, Any], deps: AgentDependencies) -> dict[str, Any]:
             "market_data_coverage": coverage,
             "industry_company_coverage": industry_coverage,
             "missing_items": unique_missing,
-            "retry_tasks": [f"补采：{item}" for item in unique_missing],
+            "retry_tasks": retry_tasks,
             "review_comment": (
                 "校验通过" if passed else "证据或数据覆盖不足，报告必须降低置信度"
             ),
         },
     }
+
+
+def _scoped_missing_items(
+    state: dict[str, Any],
+    required_outputs: tuple[str, ...],
+    skipped_nodes: set[str],
+) -> list[str]:
+    required = set(required_outputs)
+    legacy_messages = {message: key for key, message in REQUIRED_RESULTS.items()}
+    skipped_result_missing = {
+        item
+        for result_key, node in RESULT_NODES.items()
+        if node in skipped_nodes
+        for item in [
+            *state.get(result_key, {}).get("missing_items", []),
+            *state.get(result_key, {}).get("coverage", {}).get("missing_items", []),
+        ]
+    }
+    scoped: list[str] = []
+    for item in state.get("missing_items", []):
+        if item in skipped_result_missing:
+            continue
+        result_key = legacy_messages.get(item)
+        if item.startswith("缺少必需结果："):
+            result_key = item.removeprefix("缺少必需结果：")
+        if result_key is not None and result_key not in required:
+            continue
+        if any(
+            key in item and node in skipped_nodes
+            for key, node in RESULT_NODES.items()
+        ):
+            continue
+        scoped.append(item)
+    return scoped

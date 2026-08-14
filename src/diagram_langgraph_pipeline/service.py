@@ -23,6 +23,7 @@ from .providers import (
 from .providers.http_transport import HttpPolicy, ResilientHttpTransport
 from .providers.sec_edgar import SecEdgarAdapter
 from .runner import run_research
+from .routing import TaskType, get_execution_plan
 from .runtime_config import PROJECT_ROOT, llm_is_configured
 
 
@@ -40,7 +41,9 @@ class TargetMarketDataUnavailableError(RuntimeError):
 
 @dataclass(frozen=True)
 class RunOptions:
-    ticker: str
+    ticker: str | None = None
+    task_type: TaskType = TaskType.FULL
+    industry_name: str | None = None
     report_days: int = 70
     technical_days: int = 251
     as_of: date = field(default_factory=date.today)
@@ -52,6 +55,7 @@ class RunOptions:
     refresh: bool = False
     allow_paid: bool = False
     output: Path | None = None
+    run_id: str | None = None
 
 
 SECTOR_ETFS = {
@@ -63,8 +67,12 @@ SECTOR_ETFS = {
 
 
 def validate_options(options: RunOptions) -> None:
-    if not options.ticker.strip():
+    plan = get_execution_plan(options.task_type)
+    if "ticker" in plan.required_inputs and not (options.ticker or "").strip():
         raise RunConfigurationError("Ticker 不能为空")
+    if "industry_name" in plan.required_inputs and not (options.industry_name or "").strip():
+        if plan.task_type is not TaskType.FULL or not (options.ticker or "").strip():
+            raise RunConfigurationError("行业名称不能为空")
     if not 5 <= options.report_days <= 2000:
         raise RunConfigurationError("报告交易日必须在 5–2000 之间")
     if not 5 <= options.technical_days <= 2000:
@@ -84,6 +92,7 @@ def run_analysis(
     event_callback=None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     validate_options(options)
+    plan = get_execution_plan(options.task_type)
     dsn = settings.get("DATABASE_URL", "")
     if not dsn:
         raise RunConfigurationError("缺少 DATABASE_URL，请先运行 init")
@@ -96,21 +105,22 @@ def run_analysis(
         raise RunConfigurationError("数据库尚未应用 003 迁移，请先运行 init")
 
     events = RecordingEventSink(event_callback)
-    ticker = options.ticker.strip().upper()
-    metadata = repository.load_security(ticker)
-    if metadata is None and not options.offline:
+    ticker = (options.ticker or "").strip().upper()
+    metadata: Mapping[str, Any] = repository.load_security(ticker) or {}
+    if not metadata and not options.offline:
         try:
             metadata = YahooResearchAdapter(settings.get("YFINANCE_CACHE_DIR")).resolve_security(ticker)
-            repository.upsert_security_metadata(metadata)
+            repository.upsert_security_metadata(dict(metadata))
         except Exception:
-            metadata = None
+            metadata = {}
     metadata = metadata or {
         "ticker": ticker, "company_name": ticker, "market": "UNKNOWN",
         "exchange": "UNKNOWN", "industry_name": "Unknown", "sector": None,
     }
     external_ids = dict(metadata.get("external_ids") or {})
     if (
-        not options.offline
+        ticker
+        and not options.offline
         and "." not in ticker
         and not ticker.startswith("^")
         and not external_ids.get("cik")
@@ -126,12 +136,18 @@ def run_analysis(
             repository.upsert_security_metadata(metadata)
         except Exception:
             pass
-    benchmark, sector = infer_comparisons(
-        ticker,
-        metadata,
-        options.benchmark,
-        options.sector_index,
-    )
+    if "stock_data_fetch" in plan.enabled_nodes or plan.task_type is TaskType.MARKET:
+        benchmark, sector = infer_comparisons(
+            ticker,
+            metadata,
+            options.benchmark,
+            options.sector_index,
+        )
+    else:
+        benchmark = options.benchmark or (
+            "000300.SS" if plan.task_type is TaskType.MARKET else None
+        )
+        sector = options.sector_index
     market_provider = DatabaseFirstMarketDataProvider(
         YFinanceMarketDataProvider(
             settings.get("YFINANCE_CACHE_DIR"), intraday_interval="60m"
@@ -145,14 +161,22 @@ def run_analysis(
         events=events,
     )
     natural_days = min(3650, 2 * options.technical_days + 30)
-    preview = market_provider.fetch(
-        ticker, options.as_of - timedelta(days=natural_days), options.as_of
-    )
-    preview_bars = list(preview.get("bars", []))
-    if not preview_bars:
-        raise TargetMarketDataUnavailableError(f"{ticker} 没有可用目标行情")
-    report_bars = preview_bars[-options.report_days :]
-    research_start = str(report_bars[0]["trade_date"])[:10]
+    preview: Mapping[str, Any] = {
+        "bars": [],
+        "minute_bars": [],
+        "valuations": [],
+        "metadata": {},
+    }
+    research_start = options.as_of.isoformat()
+    if "stock_data_fetch" in plan.enabled_nodes:
+        preview = market_provider.fetch(
+            ticker, options.as_of - timedelta(days=natural_days), options.as_of
+        )
+        preview_bars = list(preview.get("bars", []))
+        if not preview_bars:
+            raise TargetMarketDataUnavailableError(f"{ticker} 没有可用目标行情")
+        report_bars = preview_bars[-options.report_days :]
+        research_start = str(report_bars[0]["trade_date"])[:10]
     llm_enabled = llm_is_configured(settings) if options.llm is None else options.llm
     if llm_enabled and not llm_is_configured(settings):
         raise RunConfigurationError("已启用 D4F，但缺少模型 API Key")
@@ -165,31 +189,43 @@ def run_analysis(
         allow_paid=options.allow_paid,
         network_enabled=True,
     )
+    initial_state = {
+        "task_type": plan.task_type.value,
+        "ticker": ticker,
+        "company_name": metadata.get("company_name") or (ticker if ticker else ""),
+        "industry_name": (
+            (options.industry_name or "").strip()
+            or str(metadata.get("industry_name") or "Unknown")
+        ),
+        "company_cik": external_ids.get("cik", ""),
+        "as_of_date": options.as_of.isoformat(),
+        "investment_horizon": options.horizon,
+        "user_request": (
+            f"研究任务 {plan.task_type.value}："
+            f"{ticker or (options.industry_name or plan.conclusion_scope)}；"
+            f"报告窗口 {options.report_days} 个交易日"
+        ),
+        "benchmark_ticker": benchmark or "",
+        "sector_index_ticker": sector or "",
+        "run_profile": "d4f_70d",
+        "daily_trading_days": options.report_days,
+        "technical_trading_days": options.technical_days,
+        "market_history_days": natural_days,
+        "market_history_fallback_days": natural_days,
+        "technical_history_days": natural_days,
+        "research_window_start": research_start,
+        "intraday_interval": "60m",
+        "intraday_target_bars_per_day": 15,
+        "news_limit": 36,
+        "research_inputs": {},
+        "retry_count": 0,
+        "max_retries": 1,
+    }
+    run_id = (options.run_id or "").strip()
+    if run_id:
+        initial_state["run_id"] = run_id
     state = run_research(
-        {
-            "ticker": ticker,
-            "company_name": metadata.get("company_name") or ticker,
-            "industry_name": metadata.get("industry_name") or "Unknown",
-            "company_cik": external_ids.get("cik", ""),
-            "as_of_date": options.as_of.isoformat(),
-            "investment_horizon": options.horizon,
-            "user_request": f"研究 {ticker}，报告窗口 {options.report_days} 个交易日",
-            "benchmark_ticker": benchmark or "",
-            "sector_index_ticker": sector or "",
-            "run_profile": "d4f_70d",
-            "daily_trading_days": options.report_days,
-            "technical_trading_days": options.technical_days,
-            "market_history_days": natural_days,
-            "market_history_fallback_days": natural_days,
-            "technical_history_days": natural_days,
-            "research_window_start": research_start,
-            "intraday_interval": "60m",
-            "intraday_target_bars_per_day": 15,
-            "news_limit": 36,
-            "research_inputs": {},
-            "retry_count": 0,
-            "max_retries": 1,
-        },
+        initial_state,
         AgentDependencies(
             market_data=market_provider,
             research=research,
@@ -216,7 +252,14 @@ def data_status(
     as_of: date,
     settings: Mapping[str, str],
 ) -> dict[str, Any]:
-    validate_options(RunOptions(ticker, report_days, technical_days, as_of))
+    validate_options(
+        RunOptions(
+            ticker=ticker,
+            report_days=report_days,
+            technical_days=technical_days,
+            as_of=as_of,
+        )
+    )
     dsn = settings.get("DATABASE_URL", "")
     if not dsn:
         raise RunConfigurationError("缺少 DATABASE_URL")
@@ -266,15 +309,16 @@ def refresh_data(options: RunOptions, settings: Mapping[str, str], *, event_call
         repository, report_days=options.report_days, technical_days=options.technical_days,
         intraday_interval="60m", refresh=True, events=events,
     )
+    ticker = (options.ticker or "").upper()
     payload = provider.fetch(
-        options.ticker.upper(),
+        ticker,
         options.as_of - timedelta(days=min(3650, 2 * options.technical_days + 30)),
         options.as_of,
     )
     if not payload.get("bars"):
-        raise TargetMarketDataUnavailableError(f"{options.ticker} 没有可用目标行情")
+        raise TargetMarketDataUnavailableError(f"{ticker} 没有可用目标行情")
     return {
-        "ticker": options.ticker.upper(),
+        "ticker": ticker,
         "daily_bars": len(payload.get("bars", [])),
         "intraday_bars": len(payload.get("minute_bars", [])),
         "api_added": payload.get("metadata", {}).get("api_bar_count", 0),
@@ -380,6 +424,17 @@ def result_summary(state: Mapping[str, Any], acquisition, report_path: Path) -> 
     completion_tokens = sum(item["completion_tokens"] for item in usages)
     return {
         "run_id": state.get("run_id"), "ticker": state.get("ticker"),
+        "task_type": state.get("task_type", "full"),
+        "enabled_nodes": [
+            *state.get("required_nodes", []),
+            *state.get("support_nodes", []),
+            *state.get("optional_nodes", []),
+        ],
+        "skipped_nodes": state.get("skipped_nodes", []),
+        "completed_nodes": state.get("completed_nodes", []),
+        "failed_nodes": state.get("failed_nodes", []),
+        "optional_node_statuses": state.get("optional_node_statuses", {}),
+        "conclusion_scope": state.get("conclusion_scope"),
         "coverage": acquisition, "provider_calls": acquisition.get("provider_status_counts", {}),
         "d4f_token_usage": {
             "prompt_tokens": prompt_tokens,
@@ -397,7 +452,11 @@ def result_summary(state: Mapping[str, Any], acquisition, report_path: Path) -> 
 
 
 def _write_report(state: Mapping[str, Any], requested: Path | None) -> Path:
-    ticker = re.sub(r"[^A-Za-z0-9._^-]+", "_", str(state["ticker"]))
+    ticker = re.sub(
+        r"[^A-Za-z0-9._^-]+",
+        "_",
+        str(state.get("ticker") or state.get("task_type") or "research"),
+    )
     target = requested or PROJECT_ROOT / "outputs" / (
         f"final_report_{ticker}_{state['as_of_date']}_{str(state['run_id'])[:8]}.md"
     )

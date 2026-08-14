@@ -16,6 +16,7 @@ from .database_admin import DatabaseSetupError, apply_migrations, diagnose_datab
 from .demo_data import demo_research_inputs, make_market_payload
 from .dependencies import AgentDependencies
 from .providers import InMemoryMarketDataProvider
+from .routing import TaskExecutionPlan, TaskType, get_execution_plan
 from .runner import run_research
 from .runtime_config import (
     llm_is_configured,
@@ -92,7 +93,13 @@ def init_database(
 
 @app.command("run")
 def run_command(
-    ticker: str = typer.Argument(..., help="Yahoo 可识别的证券代码。"),
+    ticker: Optional[str] = typer.Argument(
+        None, help="所有任务都必须填写真实证券代码。"
+    ),
+    task: TaskType = typer.Option(
+        TaskType.FULL, "--task", case_sensitive=False
+    ),
+    industry_name: Optional[str] = typer.Option(None, "--industry-name"),
     report_days: int = typer.Option(70, "--report-days"),
     technical_days: int = typer.Option(251, "--technical-days"),
     as_of: str = typer.Option(date.today().isoformat(), "--as-of"),
@@ -106,9 +113,10 @@ def run_command(
     json_output: bool = typer.Option(False, "--json"),
     output: Optional[Path] = typer.Option(None, "--output"),
 ) -> None:
-    """运行一次完整的 23 节点研究。"""
+    """按所选任务运行一次研究。"""
     options = RunOptions(
-        ticker=ticker, report_days=report_days, technical_days=technical_days,
+        ticker=ticker, task_type=task, industry_name=industry_name,
+        report_days=report_days, technical_days=technical_days,
         as_of=_parse_date_option(as_of), benchmark=benchmark, sector_index=sector_index,
         horizon=horizon, llm=llm, offline=offline, refresh=refresh,
         allow_paid=allow_paid, output=output,
@@ -122,10 +130,15 @@ def run_command(
             + "）；非交互运行必须显式传入 --allow-paid",
             2,
         )
+    plan = get_execution_plan(task)
+    if not json_output:
+        _print_task_plan(plan)
     try:
         state, summary = run_analysis(
             options, settings,
-            event_callback=_event_printer if not json_output else _quiet_event_printer,
+            event_callback=(
+                _TaskProgressPrinter(plan) if not json_output else _quiet_event_printer
+            ),
         )
     except Exception as exc:
         _handle_error(exc)
@@ -177,7 +190,11 @@ def data_refresh_command(
     try:
         result = refresh_data(
             RunOptions(
-                ticker, report_days, technical_days, _parse_date_option(as_of), refresh=True
+                ticker=ticker,
+                report_days=report_days,
+                technical_days=technical_days,
+                as_of=_parse_date_option(as_of),
+                refresh=True,
             ),
             load_settings(),
             event_callback=_event_printer if not json_output else _quiet_event_printer,
@@ -215,26 +232,68 @@ def demo() -> None:
 def _wizard() -> None:
     settings = load_settings()
     while True:
-        ticker = typer.prompt("Ticker").strip().upper()
+        task_type = _prompt_task_type()
+        plan = get_execution_plan(task_type)
+        ticker = None
+        if "ticker" in plan.required_inputs:
+            ticker = typer.prompt("Ticker").strip().upper()
+        industry_name = None
+        if task_type is TaskType.INDUSTRY:
+            industry_name = (
+                typer.prompt("行业名称（留空从证券元数据推断）", default="").strip()
+                or None
+            )
+        elif task_type is TaskType.FULL:
+            industry_name = (
+                typer.prompt("行业名称（留空从证券元数据推断）", default="").strip()
+                or None
+            )
         as_of = _prompt_date("截止日", date.today())
         report_days = _prompt_days("报告交易日", 70)
-        technical_days = _prompt_days("技术交易日", 251, minimum=report_days)
+        if any(
+            node in plan.enabled_nodes
+            for node in ("stock_data_fetch", "index_analysis", "sector_technical")
+        ):
+            technical_days = _prompt_days("技术交易日", 251, minimum=report_days)
+        else:
+            technical_days = max(251, report_days)
         horizon = _prompt_horizon()
-        benchmark = typer.prompt("基准指数（留空自动推断）", default="").strip() or None
-        sector = typer.prompt("行业指数（留空自动推断）", default="").strip() or None
+        benchmark = None
+        sector = None
+        if task_type in {TaskType.FULL, TaskType.MARKET}:
+            benchmark = typer.prompt(
+                "基准指数（留空自动推断）", default=""
+            ).strip() or None
+            sector = typer.prompt(
+                "行业指数（留空表示不指定）", default=""
+            ).strip() or None
         llm = typer.confirm("启用完整 D4F？", default=llm_is_configured(settings))
         paid = paid_provider_names(settings)
         allow_paid = False
         if paid:
             stderr.print("预计可能调用：" + "、".join(paid))
             allow_paid = typer.confirm("允许调用这些计量/付费 Provider？", default=False)
+        _print_task_plan(plan)
+        if not typer.confirm("按以上计划开始研究？", default=True):
+            if typer.confirm("重新输入？", default=True):
+                continue
+            return
         try:
             state, summary = run_analysis(
                 RunOptions(
-                    ticker, report_days, technical_days, as_of, benchmark, sector,
-                    horizon, llm, allow_paid=allow_paid,
+                    ticker=ticker,
+                    task_type=task_type,
+                    industry_name=industry_name,
+                    report_days=report_days,
+                    technical_days=technical_days,
+                    as_of=as_of,
+                    benchmark=benchmark,
+                    sector_index=sector,
+                    horizon=horizon,
+                    llm=llm,
+                    allow_paid=allow_paid,
                 ),
-                settings, event_callback=_event_printer,
+                settings, event_callback=_TaskProgressPrinter(plan),
             )
         except Exception as exc:
             stderr.print(f"[red]{exc}[/red]")
@@ -258,6 +317,71 @@ def _wizard() -> None:
                 return
             else:
                 stderr.print("请输入 summary、report、tokens、again 或 exit")
+
+
+def _prompt_task_type() -> TaskType:
+    labels = {
+        "完整研究": TaskType.FULL,
+        "行业研究": TaskType.INDUSTRY,
+        "基本面研究": TaskType.FUNDAMENTAL,
+        "技术面研究": TaskType.TECHNICAL,
+        "市场研究": TaskType.MARKET,
+    }
+    choices = " / ".join(
+        f"{label}({task_type.value})" for label, task_type in labels.items()
+    )
+    while True:
+        value = typer.prompt(f"研究任务：{choices}", default=TaskType.FULL.value).strip()
+        if value in labels:
+            return labels[value]
+        try:
+            return TaskType(value.lower())
+        except ValueError:
+            stderr.print("[red]请输入 full、industry、fundamental、technical 或 market[/red]")
+
+
+def _print_task_plan(plan: TaskExecutionPlan) -> None:
+    table = Table(title="研究任务计划")
+    table.add_column("项目")
+    table.add_column("内容")
+    table.add_row("task", plan.task_type.value)
+    table.add_row("结论范围", plan.conclusion_scope)
+    table.add_row("required", str(len(plan.required_nodes)))
+    table.add_row("support", str(len(plan.support_nodes)))
+    table.add_row("optional", str(len(plan.optional_nodes)))
+    table.add_row("skipped", str(len(plan.skipped_nodes)))
+    stdout.print(
+        f"task={plan.task_type.value}  scope={plan.conclusion_scope}  "
+        f"skipped={len(plan.skipped_nodes)}"
+    )
+    stdout.print(table)
+
+
+class _TaskProgressPrinter:
+    def __init__(self, plan: TaskExecutionPlan) -> None:
+        self._enabled_nodes = set(plan.enabled_nodes)
+        self._terminal_nodes: set[str] = set()
+        self._total = len(plan.enabled_nodes)
+
+    def __call__(self, event) -> None:
+        if event.event_type != "node" or event.stage not in self._enabled_nodes:
+            return
+        if event.status in {"completed", "degraded", "failed"}:
+            self._terminal_nodes.add(event.stage)
+        reason = (
+            f"  reason={event.message}"
+            if event.status in {"degraded", "failed"}
+            else ""
+        )
+        color = {
+            "completed": "green",
+            "degraded": "yellow",
+            "failed": "red",
+        }.get(event.status, "cyan")
+        stderr.print(
+            f"[{color}]{len(self._terminal_nodes)}/{self._total}[/{color}] "
+            f"{event.stage}  {event.status}{reason}"
+        )
 
 
 def _prompt_days(label: str, default: int, minimum: int = 5) -> int:
@@ -308,9 +432,14 @@ def _quiet_event_printer(event) -> None:
 def _print_summary(summary) -> None:
     decision = summary.get("decision", {})
     review = summary.get("review", {})
+    conclusion = (
+        f"decision={decision.get('action_bias', 'unknown')}"
+        if decision or summary.get("task_type", "full") == "full"
+        else f"scope={summary.get('conclusion_scope') or summary.get('task_type')}"
+    )
     stdout.print(
         f"run_id={summary.get('run_id')}  ticker={summary.get('ticker')}  "
-        f"decision={decision.get('action_bias', 'unknown')}  "
+        f"{conclusion}  "
         f"review={'pass' if review.get('passed') else 'not-pass'}"
     )
 

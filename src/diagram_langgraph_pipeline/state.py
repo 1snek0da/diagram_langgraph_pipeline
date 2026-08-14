@@ -15,9 +15,16 @@ def merge_dicts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     return {**(left or {}), **(right or {})}
 
 
+def merge_unique(left: list[str], right: list[str]) -> list[str]:
+    """Merge parallel node audit lists while preserving first-seen order."""
+
+    return list(dict.fromkeys([*(left or []), *(right or [])]))
+
+
 class DiagramBasedResearchState(TypedDict, total=False):
     # Request identity
     run_id: str
+    task_type: str
     ticker: str
     company_name: str
     industry_name: str
@@ -47,6 +54,19 @@ class DiagramBasedResearchState(TypedDict, total=False):
     llm_prompt_token_limit: int
     llm_projection_target: int
     llm_max_concurrency: int
+
+    # Task execution plan
+    required_nodes: list[str]
+    support_nodes: list[str]
+    optional_nodes: list[str]
+    skipped_nodes: list[str]
+    required_inputs: list[str]
+    required_outputs: list[str]
+    result_keys: list[str]
+    conclusion_scope: str
+    completed_nodes: Annotated[list[str], merge_unique]
+    failed_nodes: Annotated[list[str], merge_unique]
+    optional_node_statuses: Annotated[dict[str, Any], merge_dicts]
 
     # Optional caller-supplied research material keyed by topic.
     research_inputs: dict[str, Any]

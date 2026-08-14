@@ -38,6 +38,21 @@ python -m diagram_langgraph_pipeline
 diagram-langgraph-pipeline
 ```
 
+## Web research terminal
+
+Install the optional web and PostgreSQL dependencies, apply migration 004, then run the API and Streamlit UI in separate terminals:
+
+```powershell
+python -m pip install -e ".[web,postgres]"
+python -m diagram_langgraph_pipeline init
+.\scripts\start_api.ps1
+.\scripts\start_streamlit.ps1
+```
+
+The terminal has six pages: research workspace, new analysis, workflow, market view, report, and history. The API exposes the five Router modes `full`, `industry`, `fundamental`, `technical`, and `market`. Run state, node progress, reports, and history are stored in PostgreSQL; incomplete runs are marked interrupted when the API starts. Configure `DLP_API_BASE_URL`, `DLP_API_MAX_WORKERS`, and `DLP_CORS_ORIGINS` in `.env.local` or the process environment.
+
+This product is research-only. It does not connect to a broker, place orders, or execute trades.
+
 ## 交互 CLI 与 DB-first 运行
 
 CLI 强制使用 PostgreSQL：先检查数据库，再从缓存读取行情与研究资料，只有覆盖不足或
@@ -60,6 +75,37 @@ diagram-langgraph-pipeline run AAPL --no-llm --json
 # 原有无需数据库、无需网络的演示
 diagram-langgraph-pipeline demo
 ```
+
+### 任务 Router
+
+`run` 通过 `--task` 显式选择研究范围，支持 `full`、`industry`、
+`fundamental`、`technical` 和 `market` 五种任务。五种任务都必须提供真实股票代码；
+股票代码既用于标识本次研究，也用于读取公司、行业、市场和板块元数据。
+`industry_name` 可以通过 `--industry-name` 显式传入，留空时会优先使用该股票的元数据补齐。
+
+```powershell
+# 完整研究（省略 --task 时也默认执行 full）
+diagram-langgraph-pipeline run AAPL --task full --no-llm
+
+# 行业研究；行业名可省略并从 AAPL 元数据补齐
+diagram-langgraph-pipeline run AAPL --task industry --no-llm
+diagram-langgraph-pipeline run AAPL --task industry --industry-name 通信 --no-llm
+
+# 个股基本面与估值
+diagram-langgraph-pipeline run AAPL --task fundamental --no-llm
+
+# 个股技术面
+diagram-langgraph-pipeline run AAPL --task technical --no-llm
+
+# 市场环境；基准和板块可从 AAPL 元数据推断，也可显式指定
+diagram-langgraph-pipeline run AAPL --task market --no-llm
+diagram-langgraph-pipeline run AAPL --task market --benchmark ^GSPC --sector-index XLK --no-llm
+```
+
+只有 `full` 会运行综合决策节点并给出完整买入、持有、观察、减仓或卖出结论；
+其余任务只报告所选范围内的研究结果。未选中的节点不会被构建和执行，也不会调用对应的
+Provider 或 LLM。基本面任务中的边际变化属于可选节点：获取失败时会记录为
+`skipped/degraded` 并继续生成报告，不会伪造数据或阻塞估值。
 
 `--offline` 只读取数据库，`--refresh` 强制补采，两者互斥。免费 Yahoo、SEC、ECB
 和官方网页在缺数时可自动调用；检测到 Tushare、CNINFO、Wind 或 iFinD 配置时，向导会
